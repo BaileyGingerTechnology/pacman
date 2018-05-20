@@ -1,5 +1,5 @@
 #  Copyright (c) 2006 by Aurelien Foret <orelien@chez.com>
-#  Copyright (c) 2006-2014 Pacman Development Team <pacman-dev@archlinux.org>
+#  Copyright (c) 2006-2016 Pacman Development Team <pacman-dev@archlinux.org>
 #
 #  This program is free software; you can redistribute it and/or modify
 #  it under the terms of the GNU General Public License as published by
@@ -37,7 +37,14 @@ class pmtest(object):
         self.name = name
         self.testname = os.path.basename(name).replace('.py', '')
         self.root = root
+        self.dbver = 9
         self.cachepkgs = True
+        self.cmd = ["pacman", "--noconfirm",
+                "--config", self.configfile(),
+                "--root", self.rootdir(),
+                "--dbpath", self.dbdir(),
+                "--hookdir", self.hookdir(),
+                "--cachedir", self.cachedir()]
 
     def __str__(self):
         return "name = %s\n" \
@@ -172,23 +179,45 @@ class pmtest(object):
         # Filesystem
         vprint("    Populating file system")
         for f in self.filesystem:
-            vprint("\t%s" % f)
-            util.mkfile(self.root, f, f)
-            path = os.path.join(self.root, f)
-            if os.path.isfile(path):
-                os.utime(path, (355, 355))
+            if type(f) is pmfile.pmfile:
+                vprint("\t%s" % f.path)
+                f.mkfile(self.root);
+            else:
+                vprint("\t%s" % f)
+                path = util.mkfile(self.root, f, f)
+                if os.path.isfile(path):
+                    os.utime(path, (355, 355))
         for pkg in self.db["local"].pkgs:
             vprint("\tinstalling %s" % pkg.fullname())
             pkg.install_package(self.root)
+        if self.db["local"].pkgs and self.dbver >= 9:
+            path = os.path.join(self.root, util.PM_DBPATH, "local")
+            util.mkfile(path, "ALPM_DB_VERSION", str(self.dbver))
 
         # Done.
         vprint("    Taking a snapshot of the file system")
-        for roots, dirs, files in os.walk(self.root):
-            for i in files:
-                filename = os.path.join(roots, i)
-                f = pmfile.PacmanFile(self.root, filename.replace(self.root + "/", ""))
-                self.files.append(f)
-                vprint("\t%s" % f.name)
+        for filename in self.snapshots_needed():
+            f = pmfile.snapshot(self.root, filename)
+            self.files.append(f)
+            vprint("\t%s" % f.name)
+
+    def add_hook(self, name, content):
+        if not name.endswith(".hook"):
+            name = name + ".hook"
+        path = os.path.join("etc/pacman.d/hooks/", name)
+        self.filesystem.append(pmfile.pmfile(path, content))
+
+    def add_script(self, name, content):
+        if not content.startswith("#!"):
+            content = "#!/bin/sh\n" + content
+        path = os.path.join("bin/", name)
+        self.filesystem.append(pmfile.pmfile(path, content, mode=0o755))
+
+    def snapshots_needed(self):
+        files = set()
+        for r in self.rules:
+            files.update(r.snapshots_needed())
+        return files
 
     def run(self, pacman):
         if os.path.isfile(util.PM_LOCK):
@@ -225,16 +254,24 @@ class pmtest(object):
                 "--log-file=%s" % os.path.join(self.root, "var/log/valgrind"),
                 "--suppressions=%s" % suppfile])
             self.addrule("FILE_EMPTY=var/log/valgrind")
-        cmd.extend([pacman["bin"],
-            "--config", os.path.join(self.root, util.PACCONF),
-            "--root", self.root,
-            "--dbpath", os.path.join(self.root, util.PM_DBPATH),
-            "--cachedir", os.path.join(self.root, util.PM_CACHEDIR)])
-        if not pacman["manual-confirm"]:
-            cmd.append("--noconfirm")
+
+        # replace program name with absolute path
+        prog = pacman["bin"]
+        if not prog:
+            prog = util.which(self.cmd[0], pacman["bindir"])
+        if not prog or not os.access(prog, os.X_OK):
+            if not prog:
+                tap.bail("could not locate '%s' binary" % (self.cmd[0]))
+                return
+
+        cmd.append(os.path.abspath(prog))
+        cmd.extend(self.cmd[1:])
+        if pacman["manual-confirm"]:
+            cmd.append("--confirm")
         if pacman["debug"]:
             cmd.append("--debug=%s" % pacman["debug"])
         cmd.extend(shlex.split(self.args))
+
         if not (pacman["gdb"] or pacman["nolog"]):
             output = open(os.path.join(self.root, util.LOGFILE), 'w')
         else:
@@ -271,5 +308,20 @@ class pmtest(object):
             else:
                 self.result["fail"] += 1
             tap.ok(success, i)
+
+    def configfile(self):
+        return os.path.join(self.root, util.PACCONF)
+
+    def dbdir(self):
+        return os.path.join(self.root, util.PM_DBPATH)
+
+    def rootdir(self):
+        return self.root + '/'
+
+    def cachedir(self):
+        return os.path.join(self.root, util.PM_CACHEDIR)
+
+    def hookdir(self):
+        return os.path.join(self.root, util.PM_HOOKDIR)
 
 # vim: set ts=4 sw=4 et:

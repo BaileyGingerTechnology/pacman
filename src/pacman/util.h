@@ -1,7 +1,7 @@
 /*
  *  util.h
  *
- *  Copyright (c) 2006-2014 Pacman Development Team <pacman-dev@archlinux.org>
+ *  Copyright (c) 2006-2016 Pacman Development Team <pacman-dev@archlinux.org>
  *  Copyright (c) 2002-2006 by Judd Vinet <jvinet@zeroflux.org>
  *
  *  This program is free software; you can redistribute it and/or modify
@@ -17,8 +17,8 @@
  *  You should have received a copy of the GNU General Public License
  *  along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
-#ifndef _PM_UTIL_H
-#define _PM_UTIL_H
+#ifndef PM_UTIL_H
+#define PM_UTIL_H
 
 #include <stdlib.h>
 #include <stdarg.h>
@@ -49,10 +49,11 @@ int trans_init(alpm_transflag_t flags, int check_valid);
 int trans_release(void);
 int needs_root(void);
 int check_syncdbs(size_t need_repos, int check_valid);
-unsigned short getcols(int fd);
+int sync_syncdbs(int level, alpm_list_t *syncs);
+unsigned short getcols(void);
+void columns_cache_reset(void);
 int rmrf(const char *path);
 void indentprint(const char *str, unsigned short indent, unsigned short cols);
-size_t strtrim(char *str);
 char *strreplace(const char *str, const char *needle, const char *replace);
 void string_display(const char *title, const char *string, unsigned short cols);
 double humanize_size(off_t bytes, const char target_unit, int precision,
@@ -81,6 +82,6 @@ int pm_vfprintf(FILE *stream, alpm_loglevel_t level, const char *format, va_list
 int pm_sprintf(char **string, alpm_loglevel_t level, const char *format, ...) __attribute__((format(printf,3,4)));
 int pm_vasprintf(char **string, alpm_loglevel_t level, const char *format, va_list args) __attribute__((format(printf,3,0)));
 
-#endif /* _PM_UTIL_H */
+#endif /* PM_UTIL_H */
 
 /* vim: set noet: */

@@ -1,7 +1,7 @@
 /*
  *  download.c
  *
- *  Copyright (c) 2006-2014 Pacman Development Team <pacman-dev@archlinux.org>
+ *  Copyright (c) 2006-2016 Pacman Development Team <pacman-dev@archlinux.org>
  *  Copyright (c) 2002-2006 by Judd Vinet <jvinet@zeroflux.org>
  *
  *  This program is free software; you can redistribute it and/or modify
@@ -131,7 +131,9 @@ static int dload_progress_cb(void *file, double dltotal, double dlnow,
 		payload->handle->dlcb(payload->remote_name, 0, (off_t)dltotal);
 	}
 
-	payload->handle->dlcb(payload->remote_name, current_size, total_size);
+	/* do NOT include initial_size since it wasn't part of the package's
+	 * download_size (nor included in the total download size callback) */
+	payload->handle->dlcb(payload->remote_name, (off_t)dlnow, (off_t)dltotal);
 
 	payload->prevprogress = current_size;
 
@@ -286,7 +288,6 @@ static void curl_set_handle_opts(struct dload_payload *payload,
 	 * to reset the handle's parameters for each time it's used. */
 	curl_easy_reset(curl);
 	curl_easy_setopt(curl, CURLOPT_URL, payload->fileurl);
-	curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1L);
 	curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, error_buffer);
 	curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
 	curl_easy_setopt(curl, CURLOPT_FILETIME, 1L);
@@ -322,7 +323,7 @@ static void curl_set_handle_opts(struct dload_payload *payload,
 		curl_easy_setopt(curl, CURLOPT_TIMECONDITION, CURL_TIMECOND_IFMODSINCE);
 		curl_easy_setopt(curl, CURLOPT_TIMEVALUE, (long)st.st_mtime);
 		_alpm_log(handle, ALPM_LOG_DEBUG,
-				"using time condition: %lu\n", (long)st.st_mtime);
+				"using time condition: %ld\n", (long)st.st_mtime);
 	} else if(stat(payload->tempfile_name, &st) == 0 && payload->allow_resume) {
 		/* a previous partial download exists, resume from end of file. */
 		payload->tempfile_openmode = "ab";
@@ -378,7 +379,7 @@ static FILE *create_tempfile(struct dload_payload *payload, const char *localpat
 	payload->tempfile_name = randpath;
 	free(payload->remote_name);
 	STRDUP(payload->remote_name, strrchr(randpath, '/') + 1,
-			RET_ERR(payload->handle, ALPM_ERR_MEMORY, NULL));
+			fclose(fp); RET_ERR(payload->handle, ALPM_ERR_MEMORY, NULL));
 
 	return fp;
 }
@@ -387,7 +388,7 @@ static FILE *create_tempfile(struct dload_payload *payload, const char *localpat
 #define HOSTNAME_SIZE 256
 
 static int curl_download_internal(struct dload_payload *payload,
-		const char *localpath, char **final_file, char **final_url)
+		const char *localpath, char **final_file, const char **final_url)
 {
 	int ret = -1;
 	FILE *localf = NULL;
@@ -478,12 +479,14 @@ static int curl_download_internal(struct dload_payload *payload,
 			_alpm_log(handle, ALPM_LOG_DEBUG, "response code: %ld\n", payload->respcode);
 			if(payload->respcode >= 400) {
 				payload->unlink_on_fail = 1;
-				/* non-translated message is same as libcurl */
-				snprintf(error_buffer, sizeof(error_buffer),
-						"The requested URL returned error: %ld", payload->respcode);
-				_alpm_log(handle, ALPM_LOG_ERROR,
-						_("failed retrieving file '%s' from %s : %s\n"),
-						payload->remote_name, hostname, error_buffer);
+				if(!payload->errors_ok) {
+					/* non-translated message is same as libcurl */
+					snprintf(error_buffer, sizeof(error_buffer),
+							"The requested URL returned error: %ld", payload->respcode);
+					_alpm_log(handle, ALPM_LOG_ERROR,
+							_("failed retrieving file '%s' from %s : %s\n"),
+							payload->remote_name, hostname, error_buffer);
+				}
 				goto cleanup;
 			}
 			break;
@@ -491,12 +494,11 @@ static int curl_download_internal(struct dload_payload *payload,
 			/* handle the interrupt accordingly */
 			if(dload_interrupted == ABORT_OVER_MAXFILESIZE) {
 				payload->curlerr = CURLE_FILESIZE_EXCEEDED;
+				payload->unlink_on_fail = 1;
 				handle->pm_errno = ALPM_ERR_LIBCURL;
-				/* use the 'size exceeded' message from libcurl */
 				_alpm_log(handle, ALPM_LOG_ERROR,
-						_("failed retrieving file '%s' from %s : %s\n"),
-						payload->remote_name, hostname,
-						curl_easy_strerror(CURLE_FILESIZE_EXCEEDED));
+						_("failed retrieving file '%s' from %s : expected download size exceeded\n"),
+						payload->remote_name, hostname);
 			}
 			goto cleanup;
 		default:
@@ -620,7 +622,7 @@ cleanup:
  * @return 0 on success, -1 on error (pm_errno is set accordingly if errors_ok == 0)
  */
 int _alpm_download(struct dload_payload *payload, const char *localpath,
-		char **final_file, char **final_url)
+		char **final_file, const char **final_url)
 {
 	alpm_handle_t *handle = payload->handle;
 
@@ -651,7 +653,7 @@ static char *filecache_find_url(alpm_handle_t *handle, const char *url)
 	}
 
 	filebase++;
-	if(filebase == '\0') {
+	if(*filebase == '\0') {
 		return NULL;
 	}
 
@@ -662,8 +664,8 @@ static char *filecache_find_url(alpm_handle_t *handle, const char *url)
 char SYMEXPORT *alpm_fetch_pkgurl(alpm_handle_t *handle, const char *url)
 {
 	char *filepath;
-	const char *cachedir;
-	char *final_file = NULL, *final_pkg_url = NULL;
+	const char *cachedir, *final_pkg_url = NULL;
+	char *final_file = NULL;
 	struct dload_payload payload;
 	int ret = 0;
 

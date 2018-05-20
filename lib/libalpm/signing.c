@@ -1,7 +1,7 @@
 /*
  *  signing.c
  *
- *  Copyright (c) 2008-2014 Pacman Development Team <pacman-dev@archlinux.org>
+ *  Copyright (c) 2008-2016 Pacman Development Team <pacman-dev@archlinux.org>
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
@@ -221,6 +221,11 @@ int _alpm_key_in_keychain(alpm_handle_t *handle, const char *fpr)
 	gpgme_key_t key;
 	int ret = -1;
 
+	if(alpm_list_find_str(handle->known_keys, fpr)) {
+		_alpm_log(handle, ALPM_LOG_DEBUG, "key %s found in cache\n", fpr);
+		return 1;
+	}
+
 	if(init_gpgme(handle)) {
 		/* pm_errno was set in gpgme_init() */
 		goto error;
@@ -238,6 +243,7 @@ int _alpm_key_in_keychain(alpm_handle_t *handle, const char *fpr)
 		ret = 0;
 	} else if(gpg_err_code(gpg_err) == GPG_ERR_NO_ERROR) {
 		_alpm_log(handle, ALPM_LOG_DEBUG, "key lookup success, key exists\n");
+		handle->known_keys = alpm_list_add(handle->known_keys, strdup(fpr));
 		ret = 1;
 	} else {
 		_alpm_log(handle, ALPM_LOG_DEBUG, "gpg error: %s\n", gpgme_strerror(gpg_err));
@@ -327,6 +333,10 @@ static int key_search(alpm_handle_t *handle, const char *fpr,
 	pgpkey->length = key->subkeys->length;
 	pgpkey->revoked = key->subkeys->revoked;
 
+	/* Initialize with '?', this is overwritten unless public key
+	 * algorithm is unknown. */
+	pgpkey->pubkey_algo = '?';
+
 	switch(key->subkeys->pubkey_algo) {
 		case GPGME_PK_RSA:
 		case GPGME_PK_RSA_E:
@@ -342,11 +352,27 @@ static int key_search(alpm_handle_t *handle, const char *fpr,
 		case GPGME_PK_ELG:
 		case GPGME_PK_ECDSA:
 		case GPGME_PK_ECDH:
+/* value added in gpgme 1.5.0 */
+#if GPGME_VERSION_NUMBER >= 0x010500
+		case GPGME_PK_ECC:
+#endif
+/* value added in gpgme 1.7.0 */
+#if GPGME_VERSION_NUMBER >= 0x010700
+		case GPGME_PK_EDDSA:
+#endif
 			pgpkey->pubkey_algo = 'E';
 			break;
 	}
 
 	ret = 1;
+
+	/* We do not want to add a default switch case above to receive
+	 * compiler error on new public key algorithm in gpgme. So check
+	 * here if we have a valid pubkey_algo. */
+	if (pgpkey->pubkey_algo == '?') {
+		_alpm_log(handle, ALPM_LOG_DEBUG,
+			"unknown public key algorithm: %d\n", key->subkeys->pubkey_algo);
+	}
 
 gpg_error:
 	if(ret != 1) {
@@ -388,7 +414,6 @@ static int key_import(alpm_handle_t *handle, alpm_pgpkey_t *key)
 	gpg_err = gpgme_op_import_keys(ctx, keys);
 	CHECK_ERR();
 	result = gpgme_op_import_result(ctx);
-	CHECK_ERR();
 	/* we know we tried to import exactly one key, so check for this */
 	if(result->considered != 1 || !result->imports) {
 		_alpm_log(handle, ALPM_LOG_DEBUG, "could not import key, 0 results\n");
@@ -413,7 +438,7 @@ gpg_error:
  */
 int _alpm_key_import(alpm_handle_t *handle, const char *fpr)
 {
-	int answer = 0, ret = -1;
+	int ret = -1;
 	alpm_pgpkey_t fetch_key;
 	memset(&fetch_key, 0, sizeof(fetch_key));
 
@@ -421,9 +446,13 @@ int _alpm_key_import(alpm_handle_t *handle, const char *fpr)
 		_alpm_log(handle, ALPM_LOG_DEBUG,
 				"unknown key, found %s on keyserver\n", fetch_key.uid);
 		if(!_alpm_access(handle, handle->gpgdir, "pubring.gpg", W_OK)) {
-			QUESTION(handle, ALPM_QUESTION_IMPORT_KEY,
-					&fetch_key, NULL, NULL, &answer);
-			if(answer) {
+			alpm_question_import_key_t question = {
+				.type = ALPM_QUESTION_IMPORT_KEY,
+				.import = 0,
+				.key = &fetch_key
+			};
+			QUESTION(handle, &question);
+			if(question.import) {
 				if(key_import(handle, &fetch_key) == 0) {
 					ret = 0;
 				} else {

@@ -1,5 +1,6 @@
 # Set of available languages.
 ar
+br
 ca
 cs
 da
@@ -8,15 +9,17 @@ el
 en_GB
 eo
 es
-fa
+es_419
 fi
 fr
 gl
 hr
 hu
 id
+is
 it
 ja
+ka
 kk
 ko
 lt

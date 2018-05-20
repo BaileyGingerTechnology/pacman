@@ -1,7 +1,7 @@
 /*
  *  db.c
  *
- *  Copyright (c) 2006-2014 Pacman Development Team <pacman-dev@archlinux.org>
+ *  Copyright (c) 2006-2016 Pacman Development Team <pacman-dev@archlinux.org>
  *  Copyright (c) 2002-2006 by Judd Vinet <jvinet@zeroflux.org>
  *  Copyright (c) 2005 by Aurelien Foret <orelien@chez.com>
  *  Copyright (c) 2005 by Christian Hamar <krics@linuxforum.hu>
@@ -52,12 +52,13 @@ alpm_db_t SYMEXPORT *alpm_register_syncdb(alpm_handle_t *handle,
 	CHECK_HANDLE(handle, return NULL);
 	ASSERT(treename != NULL && strlen(treename) != 0,
 			RET_ERR(handle, ALPM_ERR_WRONG_ARGS, NULL));
+	ASSERT(!strchr(treename, '/'), RET_ERR(handle, ALPM_ERR_WRONG_ARGS, NULL));
 	/* Do not register a database if a transaction is on-going */
 	ASSERT(handle->trans == NULL, RET_ERR(handle, ALPM_ERR_TRANS_NOT_NULL, NULL));
 
 	/* ensure database name is unique */
 	if(strcmp(treename, "local") == 0) {
-			RET_ERR(handle, ALPM_ERR_DB_NOT_NULL, NULL);
+		RET_ERR(handle, ALPM_ERR_DB_NOT_NULL, NULL);
 	}
 	for(i = handle->dbs_sync; i; i = i->next) {
 		alpm_db_t *d = i->data;
@@ -330,7 +331,7 @@ alpm_db_t *_alpm_db_new(const char *treename, int is_local)
 	alpm_db_t *db;
 
 	CALLOC(db, 1, sizeof(alpm_db_t), return NULL);
-	STRDUP(db->treename, treename, return NULL);
+	STRDUP(db->treename, treename, FREE(db); return NULL);
 	if(is_local) {
 		db->status |= DB_STATUS_LOCAL;
 	} else {
@@ -343,6 +344,7 @@ alpm_db_t *_alpm_db_new(const char *treename, int is_local)
 
 void _alpm_db_free(alpm_db_t *db)
 {
+	ASSERT(db != NULL, return);
 	/* cleanup pkgcache */
 	_alpm_db_free_pkgcache(db);
 	/* cleanup server list */
@@ -374,10 +376,12 @@ const char *_alpm_db_path(alpm_db_t *db)
 			CALLOC(db->_path, 1, pathsize, RET_ERR(db->handle, ALPM_ERR_MEMORY, NULL));
 			sprintf(db->_path, "%s%s/", dbpath, db->treename);
 		} else {
-			pathsize = strlen(dbpath) + 5 + strlen(db->treename) + 4;
+			const char *dbext = db->handle->dbext;
+
+			pathsize = strlen(dbpath) + 5 + strlen(db->treename) + strlen(dbext) + 1;
 			CALLOC(db->_path, 1, pathsize, RET_ERR(db->handle, ALPM_ERR_MEMORY, NULL));
 			/* all sync DBs now reside in the sync/ subdir of the dbpath */
-			sprintf(db->_path, "%ssync/%s.db", dbpath, db->treename);
+			sprintf(db->_path, "%ssync/%s%s", dbpath, db->treename, dbext);
 		}
 		_alpm_log(db->handle, ALPM_LOG_DEBUG, "database path for tree %s set to %s\n",
 				db->treename, db->_path);
@@ -541,7 +545,10 @@ alpm_pkghash_t *_alpm_db_get_pkgcache_hash(alpm_db_t *db)
 	}
 
 	if(!(db->status & DB_STATUS_PKGCACHE)) {
-		load_pkgcache(db);
+		if(load_pkgcache(db)) {
+			/* handle->error set in local/sync-db-populate */
+			return NULL;
+		}
 	}
 
 	return db->pkgcache;
@@ -561,18 +568,27 @@ alpm_list_t *_alpm_db_get_pkgcache(alpm_db_t *db)
 /* "duplicate" pkg then add it to pkgcache */
 int _alpm_db_add_pkgincache(alpm_db_t *db, alpm_pkg_t *pkg)
 {
-	alpm_pkg_t *newpkg;
+	alpm_pkg_t *newpkg = NULL;
 
 	if(db == NULL || pkg == NULL || !(db->status & DB_STATUS_PKGCACHE)) {
 		return -1;
 	}
 
 	if(_alpm_pkg_dup(pkg, &newpkg)) {
+		/* we return memory on "non-fatal" error in _alpm_pkg_dup */
+		_alpm_pkg_free(newpkg);
 		return -1;
 	}
 
 	_alpm_log(db->handle, ALPM_LOG_DEBUG, "adding entry '%s' in '%s' cache\n",
 						newpkg->name, db->treename);
+	if(newpkg->origin == ALPM_PKG_FROM_FILE) {
+		free(newpkg->origin_data.file);
+	}
+	newpkg->origin = (db->status & DB_STATUS_LOCAL)
+		? ALPM_PKG_FROM_LOCALDB
+		: ALPM_PKG_FROM_SYNCDB;
+	newpkg->origin_data.db = db;
 	db->pkgcache = _alpm_pkghash_add_sorted(db->pkgcache, newpkg);
 
 	free_groupcache(db);

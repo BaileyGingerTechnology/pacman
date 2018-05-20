@@ -52,10 +52,10 @@ similar to `$_basekernver`.
 +
 The `pkgver` variable can be automatically updated by providing a `pkgver()`
 function in the PKGBUILD that outputs the new package version.
-This is run after downloading and extracting the sources so it can use those
-files in determining the new `pkgver`.
-This is most useful when used with sources from version control systems (see
-below).
+This is run after downloading and extracting the sources and running the
+`prepare()` function (if present), so it can use those files in determining the
+new `pkgver`.  This is most useful when used with sources from version control
+systems (see below).
 
 *pkgrel*::
 	This is the release number specific to the Arch Linux release. This
@@ -63,11 +63,6 @@ below).
 	flags, for example. This is typically set to '1' for each new upstream
 	software release and incremented for intermediate PKGBUILD updates. The
 	variable is not allowed to contain hyphens.
-
-*pkgdesc*::
-	This should be a brief description of the package and its functionality.
-	Try to keep the description to one line of text and to not use the package's
-	name.
 
 *epoch*::
 	Used to force the package to be seen as newer than any previous versions
@@ -77,6 +72,11 @@ below).
 	numbering scheme of a package changes (or is alphanumeric), breaking normal
 	version comparison logic. See linkman:pacman[8] for more information on
 	version comparisons.
+
+*pkgdesc*::
+	This should be a brief description of the package and its functionality.
+	Try to keep the description to one line of text and to not use the package's
+	name.
 
 *url*::
 	This field contains a URL that is associated with the software being
@@ -116,6 +116,10 @@ below).
 	Compressed files will be extracted automatically unless found in the
 	noextract array described below.
 +
+Additional architecture-specific sources can be added by appending an
+underscore and the architecture name e.g., 'source_x86_64=()'. There must be a
+corresponding integrity array with checksums, e.g. 'md5sums_x86_64=()'.
++
 It is also possible to change the name of the downloaded file, which is helpful
 with weird URLs and for handling multiple source files with the same
 name. The syntax is: `source=('filename::url')`.
@@ -127,6 +131,15 @@ downloaded from version control systems (VCS). For more information, see
 Files in the source array with extensions `.sig`, `.sign` or, `.asc` are
 recognized by makepkg as PGP signatures and will be automatically used to verify
 the integrity of the corresponding source file.
+
+*validpgpkeys (array)*::
+	An array of PGP fingerprints. If this array is non-empty, makepkg will
+	only accept signatures from the keys listed here and will ignore the
+	trust values from the keyring. If the source file was signed with a
+	subkey, makepkg will still use the primary key for comparison.
++
+Only full fingerprints are accepted. They must be uppercase and must not
+contain whitespace characters.
 
 *noextract (array)*::
 	An array of file names corresponding to those from the source array. Files
@@ -175,17 +188,26 @@ If the dependency name appears to be a library (ends with .so), makepkg will
 try to find a binary that depends on the library in the built package and
 append the version needed by the binary. Appending the version yourself
 disables automatic detection.
++
+Additional architecture-specific depends can be added by appending an
+underscore and the architecture name e.g., 'depends_x86_64=()'.
 
 *makedepends (array)*::
 	An array of packages this package depends on to build but are not
 	needed at runtime. Packages in this list follow the same format as
 	depends.
++
+Additional architecture-specific makedepends can be added by appending an
+underscore and the architecture name e.g., 'makedepends_x86_64=()'.
 
 *checkdepends (array)*::
 	An array of packages this package depends on to run its test suite
 	but are not needed at runtime. Packages in this list follow the same
 	format as depends. These dependencies are only considered when the
 	check() function is present and is to be run by makepkg.
++
+Additional architecture-specific checkdepends can be added by appending an
+underscore and the architecture name e.g., 'checkdepends_x86_64=()'.
 
 *optdepends (array)*::
 	An array of packages (and accompanying reasons) that are not essential for
@@ -194,13 +216,19 @@ disables automatic detection.
 	and are not utilized by pacman during dependency resolution. The format
 	for specifying optdepends is:
 
-	optdepends=('fakeroot: for makepkg usage as normal user')
+	optdepends=('python: for library bindings')
++
+Additional architecture-specific optdepends can be added by appending an
+underscore and the architecture name e.g., 'optdepends_x86_64=()'.
 
 *conflicts (array)*::
 	An array of packages that will conflict with this package (i.e. they
 	cannot both be installed at the same time). This directive follows the
 	same format as depends. Versioned conflicts are supported using the
 	operators as described in `depends`.
++
+Additional architecture-specific conflicts can be added by appending an
+underscore and the architecture name e.g., 'conflicts_x86_64=()'.
 
 *provides (array)*::
 	An array of ``virtual provisions'' this package provides. This allows
@@ -216,6 +244,9 @@ only specific versions of a package may be provided.
 If the provision name appears to be a library (ends with .so), makepkg will
 try to find the library in the built package and append the correct
 version. Appending the version yourself disables automatic detection.
++
+Additional architecture-specific provides can be added by appending an
+underscore and the architecture name e.g., 'provides_x86_64=()'.
 
 *replaces (array)*::
 	An array of packages this package should replace. This can be used
@@ -226,6 +257,9 @@ version. Appending the version yourself disables automatic detection.
 +
 Sysupgrade is currently the only pacman operation that utilizes this field.
 A normal sync or upgrade will not use its value.
++
+Additional architecture-specific replaces can be added by appending an
+underscore and the architecture name e.g., 'replaces_x86_64=()'.
 
 *options (array)*::
 	This array allows you to override some of makepkg's default behavior
@@ -262,6 +296,9 @@ A normal sync or upgrade will not use its value.
 	*upx*;;
 		Compress binary executable files using UPX.
 
+	*optipng*;;
+		Optimize PNG images with optipng.
+
 	*ccache*;;
 		Allow the use of ccache during build. More useful in its negative
 		form `!ccache` with select packages that have problems building
@@ -293,7 +330,6 @@ A normal sync or upgrade will not use its value.
 
 Packaging Functions
 -------------------
-
 In addition to the above directives, PKGBUILDs require a set of functions that
 provide instructions to build and install the package. As a minimum, the
 PKGBUILD must contain a `package()` function which installs all the package's
@@ -303,10 +339,9 @@ files into the packaging directory, with optional `prepare()`, `build()`, and
 *package() Function*::
 	The `package()` function is used to install files into the directory that
 	will become the root directory of the built package and is run after all
-	the optional functions listed below. When specified in combination with
-	the fakeroot BUILDENV option in linkman:makepkg.conf[5], fakeroot usage
-	will be limited to running the packaging stage. All other functions will
-	be run as the user calling makepkg.
+	the optional functions listed below. The packaging stage is run using
+	fakeroot to ensure correct file permissions in the resulting package.
+	All other functions will be run as the user calling makepkg.
 
 *prepare() Function*::
 	An optional `prepare()` function can be specified in which operations to
@@ -333,12 +368,14 @@ the `build()` function.
 	`checkdepends` array.
 
 All of the above variables such as `$pkgname` and `$pkgver` are available for
-use in the `build()` function. In addition, makepkg defines the following
-variables for use during the build and install process:
+use in the packaging functions. In addition, makepkg defines the following
+variables:
 
 *srcdir*::
 	This contains the directory where makepkg extracts, or copies, all source
 	files.
++
+All of the packaging functions defined above are run starting inside `$srcdir`
 
 *pkgdir*::
 	This contains the directory where makepkg bundles the installed package.
@@ -350,6 +387,7 @@ variables for use during the build and install process:
 	located, which is usually the output of `$(pwd)` when makepkg is started.
 	Use of this variable is deprecated and strongly discouraged.
 
+
 Package Splitting
 -----------------
 makepkg supports building multiple packages from a single PKGBUILD. This is
@@ -360,17 +398,25 @@ Each split package uses a corresponding packaging function with name
 All options and directives for the split packages default to the global values
 given in the PKGBUILD. Nevertheless, the following ones can be overridden within
 each split package's packaging function:
-`pkgver`, `pkgrel`, `epoch`, `pkgdesc`, `arch`, `url`, `license`, `groups`,
-`depends`, `optdepends`, `provides`, `conflicts`, `replaces`, `backup`,
-`options`, `install` and `changelog`.
+`pkgdesc`, `arch`, `url`, `license`, `groups`, `depends`, `optdepends`,
+`provides`, `conflicts`, `replaces`, `backup`, `options`, `install`, and
+`changelog`.
+
+Note that makepkg does not consider split package `depends` when checking
+if dependencies are installed before package building and with `--syncdeps`.
+All packages required to make the package are required to be specified in
+the global `depends` and `makedepends` arrays.
 
 An optional global directive is available when building a split package:
 
 *pkgbase*::
 	The name used to refer to the group of packages in the output of makepkg
 	and in the naming of source-only tarballs. If not specified, the first
-	element in the `pkgname` array is used. The variable is not allowed to
-	begin with a hyphen.
+	element in the `pkgname` array is used. Valid characters for this
+	variable are alphanumerics, and any of the following characters:
+	```@ . _ + -`''. Additionally, the variable is not allowed to start with
+	hyphens or dots.
+
 
 Install/Upgrade/Remove Scripting
 --------------------------------
@@ -380,7 +426,7 @@ itself after installation and perform an opposite action upon removal.
 
 The exact time the script is run varies with each operation, and should be
 self-explanatory. Note that during an upgrade operation, none of the install
-or remove scripts will be called.
+or remove functions will be called.
 
 Scripts are passed either one or two ``full version strings'', where a full
 version string is either 'pkgver-pkgrel' or 'epoch:pkgver-pkgrel', if epoch is
@@ -418,6 +464,7 @@ same directory as the PKGBUILD script. Then use the install directive:
 The install script does not need to be specified in the source array. A
 template install file is available in '{pkgdatadir}' as 'proto.install' for
 reference with all of the available functions defined.
+
 
 Using VCS Sources[[VCS]]
 ------------------------
@@ -460,6 +507,7 @@ The source URL is divided into three components:
 	*svn*;;
 		revision
 
+
 Example
 -------
 The following is an example PKGBUILD for the 'patch' package. For more
@@ -470,6 +518,7 @@ those using Arch Linux, consult the Arch Build System (ABS) tree.
 -------------------------------
 include::PKGBUILD-example.txt[]
 -------------------------------
+
 
 See Also
 --------

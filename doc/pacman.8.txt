@@ -13,11 +13,12 @@ Synopsis
 --------
 'pacman' <operation> [options] [targets]
 
+
 Description
 -----------
 Pacman is a package management utility that tracks installed packages on a Linux
 system. It features dependency support, package groups, install and uninstall
-hooks, and the ability to sync your local machine with a remote repository to
+scripts, and the ability to sync your local machine with a remote repository to
 automatically upgrade packages. Pacman packages are a zipped tar format.
 
 Since version 3.0.0, pacman has been the front-end to linkman:libalpm[3], the
@@ -34,10 +35,10 @@ as an argument, targets will be read from stdin.
 Operations
 ----------
 *-D, \--database*::
-	Modify the package database. This operation allows you to modify certain
-	attributes of the installed packages in pacman's database. At the
-	moment, you can only change the install reason using '\--asdeps' and
-	'\--asexplicit' options.
+	Operate on the package database. This operation allows you to modify
+	certain attributes of the installed packages in pacman's database. It
+	also allows you to check the databases for internal consistency.
+	See <<DO,Database Options>> below.
 
 *-Q, \--query*::
 	Query the package database. This operation allows you to view installed
@@ -109,6 +110,12 @@ greater than `1:3.6-1`.
 	Options>> below; also see <<HCF,Handling Config Files>> for an explanation
 	on how pacman takes care of configuration files.
 
+*-F, \--files*::
+	Query the files database. This operation allows you to look for packages
+	owning certain files or display files owned by certain packages. Only
+	packages that are part of your sync databases are searched. See
+	<<FO,File Options>> below.
+
 *-V, \--version*::
 	Display version and exit.
 
@@ -123,7 +130,7 @@ Options
 	Specify an alternative database location (a typical default is
 	+{localstatedir}/lib/pacman+). This should not be used unless you know what
 	you are doing.
-	*NOTE*: if specified, this is an absolute path, and the root path is
+	*NOTE*: If specified, this is an absolute path, and the root path is
 	not automatically prepended.
 
 *-r, \--root* <path>::
@@ -168,6 +175,13 @@ Options
 	specifies that the keys are authentic and trusted. *NOTE*: This is an absolute
 	path, and the root path is not automatically prepended.
 
+*\--hookdir* <dir>::
+	Specify a alternative directory containing hook files (a typical default is
+	+{sysconfdir}/pacman.d/hooks+). Multiple hook directories can be specified
+	with hooks in later directories taking precedence over hooks in earlier
+	directories. *NOTE*: This is an absolute path, and the root path is not
+	automatically prepended.
+
 *\--logfile* <file>::
 	Specify an alternate log file. This is an absolute path, regardless of
 	the installation root setting.
@@ -176,6 +190,10 @@ Options
 	Bypass any and all ``Are you sure?'' messages. It's not a good idea to do
 	this unless you want to run pacman from a script.
 
+*\--confirm*::
+	Cancels the effects of a previous '\--noconfirm'.
+
+
 Transaction Options (apply to '-S', '-R' and '-U')
 --------------------------------------------------
 *-d, \--nodeps*::
@@ -183,6 +201,12 @@ Transaction Options (apply to '-S', '-R' and '-U')
 	pacman will always check a package's dependency fields to ensure that all
 	dependencies are installed and there are no package conflicts in the
 	system. Specify this option twice to skip all dependency checks.
+
+*\--assume-installed* <package=version>::
+	Add a virtual package "package" with version "version" to the transaction
+	to satisfy dependencies. This allows to disable specific dependency checks
+	without affecting all dependency checks. To disable all dependency
+	checking, see the '\--nodeps' option.
 
 *\--dbonly*::
 	Adds/removes the database entry only, leaving all files in place.
@@ -203,8 +227,9 @@ Transaction Options (apply to '-S', '-R' and '-U')
 
 *\--print-format* <format>::
 	Specify a printf-like format to control the output of the '\--print'
-	operation. The possible attributes are: %n for pkgname, %v for pkgver,
-	%l for location, %r for repo, and %s for size.  Implies '\--print'.
+	operation. The possible attributes are: "%n" for pkgname, "%v" for pkgver,
+	"%l" for location, "%r" for repository, and "%s" for size. Implies '\--print'.
+
 
 Upgrade Options (apply to '-S' and '-U')[[UO]]
 --------------------------------------------
@@ -212,7 +237,7 @@ Upgrade Options (apply to '-S' and '-U')[[UO]]
 	Bypass file conflict checks and overwrite conflicting files. If the
 	package that is about to be installed contains files that are already
 	installed, this option will cause all those files to be overwritten.
-	Using '--force' will not allow overwriting a directory with a file or
+	Using '\--force' will not allow overwriting a directory with a file or
 	installing packages with conflicting files and directories.
 	This option should be used with care, ideally not at all.
 
@@ -406,18 +431,67 @@ select sync packages whose versions do not match with the local versions. This
 can be useful when the user switches from a testing repository to a stable one.
 +
 Additional targets can also be specified manually, so that '-Su foo' will do a
-system upgrade and install/upgrade the foo package in the same operation.
+system upgrade and install/upgrade the "foo" package in the same operation.
 
 *-w, \--downloadonly*::
 	Retrieve all packages from the server, but do not install/upgrade anything.
 
 *-y, \--refresh*::
-	Download a fresh copy of the master package list from the server(s)
+	Download a fresh copy of the master package database from the server(s)
 	defined in linkman:pacman.conf[5]. This should typically be used each time
 	you use	'\--sysupgrade' or '-u'. Passing two '\--refresh' or '-y' flags
-	will force a refresh of all package lists, even if they appear to be up-
-	to-date.
+	will force a refresh of all package databases, even if they appear to be
+	up-to-date.
 
+
+Database Options[[QO]]
+----------------------
+*\--asdeps* <package>::
+	Mark a package as non-explicitly installed; in other words, set their install
+	reason to be installed as a dependency.
+
+*\--asexplicit* <package>::
+	Mark a package as explicitly installed; in other words, set their install
+	reason to be explicitly installed. This is useful it you want to keep a
+	package installed even when it was initially installed as a dependency
+	of another package.
+
+*-k \--check*::
+	Check the local package database is internally consistent. This will
+	check all required files are present and that installed packages have
+	the required dependencies, do not conflict and that multiple packages
+	do not own the same file. Specifying this option twice will perform
+	a check on the sync databases to ensure all specified dependencies
+	are available.
+
+File Options[[FO]]
+------------------
+
+*-y, --refresh*::
+	Download fresh package databases from the server. Use twice to force a
+	refresh even if databases are up to date.
+
+*-l, \--list*::
+	List the files owned by the queried package.
+
+*-s, \--search*::
+	Search package file names for matching strings.
+
+*-x, --regex*::
+	Treat arguments to '--search' as regular expressions.
+
+*-o, \--owns*::
+	Search for packages that own a particular file.
+
+*-q, \--quiet*::
+	Show less information for certain file operations. This is useful when
+	pacman's output is processed in a script, however, you may want to use
+	'--machinereadable' instead.
+
+*--machinereadable*::
+	Use a machine readable output format for '--list', '--search' and
+	'--owns'. The format is 'repository\0pkgname\0pkgver\0path\n' with '\0'
+	being the NULL character and '\n' a linefeed.
 
 Handling Config Files[[HCF]]
 ----------------------------
@@ -451,8 +525,9 @@ original=X, current=Y, new=Z::
 
 original=NULL, current=Y, new=Z::
 	The package was not previously installed, and the file already exists on the
-	file system. Save the current file with a '.pacorig' extension, install the
-	new file, and warn the user.
+	file system. Install the new file with a '.pacnew' extension and warn the
+	user. The user must then manually merge any necessary changes into the
+	original file.
 
 
 Examples
@@ -474,6 +549,7 @@ pacman -Syu gpm::
 	Update package list, upgrade all packages, and then install gpm if it
 	wasn't already installed.
 
+
 Configuration
 -------------
 See linkman:pacman.conf[5] for more details on configuring pacman using the
@@ -482,6 +558,7 @@ See linkman:pacman.conf[5] for more details on configuring pacman using the
 
 See Also
 --------
-linkman:pacman.conf[5], linkman:makepkg[8], linkman:libalpm[3]
+linkman:alpm-hooks[5], linkman:libalpm[3], linkman:makepkg[8],
+linkman:pacman.conf[5]
 
 include::footer.txt[]

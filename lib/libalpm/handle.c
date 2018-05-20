@@ -1,7 +1,7 @@
 /*
  *  handle.c
  *
- *  Copyright (c) 2006-2014 Pacman Development Team <pacman-dev@archlinux.org>
+ *  Copyright (c) 2006-2016 Pacman Development Team <pacman-dev@archlinux.org>
  *  Copyright (c) 2002-2006 by Judd Vinet <jvinet@zeroflux.org>
  *  Copyright (c) 2005 by Aurelien Foret <orelien@chez.com>
  *  Copyright (c) 2005, 2006 by Miklos Vajna <vmiklos@frugalware.org>
@@ -37,6 +37,7 @@
 #include "delta.h"
 #include "trans.h"
 #include "alpm.h"
+#include "deps.h"
 
 alpm_handle_t *_alpm_handle_new(void)
 {
@@ -70,22 +71,31 @@ void _alpm_handle_free(alpm_handle_t *handle)
 	curl_easy_cleanup(handle->curl);
 #endif
 
+#ifdef HAVE_LIBGPGME
+	FREELIST(handle->known_keys);
+#endif
+
 	regfree(&handle->delta_regex);
 
 	/* free memory */
 	_alpm_trans_free(handle->trans);
 	FREE(handle->root);
 	FREE(handle->dbpath);
+	FREE(handle->dbext);
 	FREELIST(handle->cachedirs);
+	FREELIST(handle->hookdirs);
 	FREE(handle->logfile);
 	FREE(handle->lockfile);
 	FREE(handle->arch);
 	FREE(handle->gpgdir);
-	FREELIST(handle->dbs_sync);
 	FREELIST(handle->noupgrade);
 	FREELIST(handle->noextract);
 	FREELIST(handle->ignorepkg);
 	FREELIST(handle->ignoregroup);
+
+	alpm_list_free_inner(handle->assumeinstalled, (alpm_list_fn_free)alpm_dep_free);
+	alpm_list_free(handle->assumeinstalled);
+
 	FREE(handle);
 }
 
@@ -116,21 +126,54 @@ int _alpm_handle_lock(alpm_handle_t *handle)
 	return (handle->lockfd >= 0 ? 0 : -1);
 }
 
-/** Remove a lock file */
-int _alpm_handle_unlock(alpm_handle_t *handle)
+/** Remove the database lock file
+ * @param handle the context handle
+ * @return 0 on success, -1 on error
+ *
+ * @note Safe to call from inside signal handlers.
+ */
+int SYMEXPORT alpm_unlock(alpm_handle_t *handle)
 {
-	ASSERT(handle->lockfile != NULL, return -1);
+	ASSERT(handle->lockfile != NULL, return 0);
 	ASSERT(handle->lockfd >= 0, return 0);
 
 	close(handle->lockfd);
 	handle->lockfd = -1;
 
-	if(unlink(handle->lockfile) && errno != ENOENT) {
-		return -1;
+	if(unlink(handle->lockfile) != 0) {
+		RET_ERR_ASYNC_SAFE(handle, ALPM_ERR_SYSTEM, -1);
+	} else {
+		return 0;
 	}
+}
+
+int _alpm_handle_unlock(alpm_handle_t *handle)
+{
+	if(alpm_unlock(handle) != 0) {
+		if(errno == ENOENT) {
+			_alpm_log(handle, ALPM_LOG_WARNING,
+					_("lock file missing %s\n"), handle->lockfile);
+			alpm_logaction(handle, ALPM_CALLER_PREFIX,
+					"warning: lock file missing %s\n", handle->lockfile);
+			return 0;
+		} else {
+			_alpm_log(handle, ALPM_LOG_WARNING,
+					_("could not remove lock file %s\n"), handle->lockfile);
+			alpm_logaction(handle, ALPM_CALLER_PREFIX,
+					"warning: could not remove lock file %s\n", handle->lockfile);
+			return -1;
+		}
+	}
+
 	return 0;
 }
 
+
+alpm_cb_log SYMEXPORT alpm_option_get_logcb(alpm_handle_t *handle)
+{
+	CHECK_HANDLE(handle, return NULL);
+	return handle->logcb;
+}
 
 alpm_cb_download SYMEXPORT alpm_option_get_dlcb(alpm_handle_t *handle)
 {
@@ -178,6 +221,12 @@ const char SYMEXPORT *alpm_option_get_dbpath(alpm_handle_t *handle)
 {
 	CHECK_HANDLE(handle, return NULL);
 	return handle->dbpath;
+}
+
+alpm_list_t SYMEXPORT *alpm_option_get_hookdirs(alpm_handle_t *handle)
+{
+	CHECK_HANDLE(handle, return NULL);
+	return handle->hookdirs;
 }
 
 alpm_list_t SYMEXPORT *alpm_option_get_cachedirs(alpm_handle_t *handle)
@@ -234,6 +283,12 @@ alpm_list_t SYMEXPORT *alpm_option_get_ignoregroups(alpm_handle_t *handle)
 	return handle->ignoregroup;
 }
 
+alpm_list_t SYMEXPORT *alpm_option_get_assumeinstalled(alpm_handle_t *handle)
+{
+	CHECK_HANDLE(handle, return NULL);
+	return handle->assumeinstalled;
+}
+
 const char SYMEXPORT *alpm_option_get_arch(alpm_handle_t *handle)
 {
 	CHECK_HANDLE(handle, return NULL);
@@ -250,6 +305,19 @@ int SYMEXPORT alpm_option_get_checkspace(alpm_handle_t *handle)
 {
 	CHECK_HANDLE(handle, return -1);
 	return handle->checkspace;
+}
+
+const char SYMEXPORT *alpm_option_get_dbext(alpm_handle_t *handle)
+{
+	CHECK_HANDLE(handle, return NULL);
+	return handle->dbext;
+}
+
+int SYMEXPORT alpm_option_set_logcb(alpm_handle_t *handle, alpm_cb_log cb)
+{
+	CHECK_HANDLE(handle, return -1);
+	handle->logcb = cb;
+	return 0;
 }
 
 int SYMEXPORT alpm_option_set_dlcb(alpm_handle_t *handle, alpm_cb_download cb)
@@ -341,6 +409,58 @@ alpm_errno_t _alpm_set_directory_option(const char *value,
 	return 0;
 }
 
+int SYMEXPORT alpm_option_add_hookdir(alpm_handle_t *handle, const char *hookdir)
+{
+	char *newhookdir;
+
+	CHECK_HANDLE(handle, return -1);
+	ASSERT(hookdir != NULL, RET_ERR(handle, ALPM_ERR_WRONG_ARGS, -1));
+
+	newhookdir = canonicalize_path(hookdir);
+	if(!newhookdir) {
+		RET_ERR(handle, ALPM_ERR_MEMORY, -1);
+	}
+	handle->hookdirs = alpm_list_add(handle->hookdirs, newhookdir);
+	_alpm_log(handle, ALPM_LOG_DEBUG, "option 'hookdir' = %s\n", newhookdir);
+	return 0;
+}
+
+int SYMEXPORT alpm_option_set_hookdirs(alpm_handle_t *handle, alpm_list_t *hookdirs)
+{
+	alpm_list_t *i;
+	CHECK_HANDLE(handle, return -1);
+	if(handle->hookdirs) {
+		FREELIST(handle->hookdirs);
+	}
+	for(i = hookdirs; i; i = i->next) {
+		int ret = alpm_option_add_hookdir(handle, i->data);
+		if(ret) {
+			return ret;
+		}
+	}
+	return 0;
+}
+
+int SYMEXPORT alpm_option_remove_hookdir(alpm_handle_t *handle, const char *hookdir)
+{
+	char *vdata = NULL;
+	char *newhookdir;
+	CHECK_HANDLE(handle, return -1);
+	ASSERT(hookdir != NULL, RET_ERR(handle, ALPM_ERR_WRONG_ARGS, -1));
+
+	newhookdir = canonicalize_path(hookdir);
+	if(!newhookdir) {
+		RET_ERR(handle, ALPM_ERR_MEMORY, -1);
+	}
+	handle->hookdirs = alpm_list_remove_str(handle->hookdirs, newhookdir, &vdata);
+	FREE(newhookdir);
+	if(vdata != NULL) {
+		FREE(vdata);
+		return 1;
+	}
+	return 0;
+}
+
 int SYMEXPORT alpm_option_add_cachedir(alpm_handle_t *handle, const char *cachedir)
 {
 	char *newcachedir;
@@ -405,7 +525,7 @@ int SYMEXPORT alpm_option_set_logfile(alpm_handle_t *handle, const char *logfile
 		return -1;
 	}
 
-	handle->logfile = strdup(logfile);
+	STRDUP(handle->logfile, logfile, RET_ERR(handle, ALPM_ERR_MEMORY, -1));
 
 	/* free the old logfile path string, and close the stream so logaction
 	 * will reopen a new stream on the new logfile */
@@ -422,17 +542,11 @@ int SYMEXPORT alpm_option_set_logfile(alpm_handle_t *handle, const char *logfile
 
 int SYMEXPORT alpm_option_set_gpgdir(alpm_handle_t *handle, const char *gpgdir)
 {
+	int err;
 	CHECK_HANDLE(handle, return -1);
-	if(!gpgdir) {
-		handle->pm_errno = ALPM_ERR_WRONG_ARGS;
-		return -1;
+	if((err = _alpm_set_directory_option(gpgdir, &(handle->gpgdir), 0))) {
+		RET_ERR(handle, err, -1);
 	}
-
-	if(handle->gpgdir) {
-		FREE(handle->gpgdir);
-	}
-	handle->gpgdir = strdup(gpgdir);
-
 	_alpm_log(handle, ALPM_LOG_DEBUG, "option 'gpgdir' = %s\n", handle->gpgdir);
 	return 0;
 }
@@ -444,111 +558,169 @@ int SYMEXPORT alpm_option_set_usesyslog(alpm_handle_t *handle, int usesyslog)
 	return 0;
 }
 
-int SYMEXPORT alpm_option_add_noupgrade(alpm_handle_t *handle, const char *pkg)
+static int _alpm_option_strlist_add(alpm_handle_t *handle, alpm_list_t **list, const char *str)
+{
+	char *dup;
+	CHECK_HANDLE(handle, return -1);
+	STRDUP(dup, str, RET_ERR(handle, ALPM_ERR_MEMORY, -1));
+	*list = alpm_list_add(*list, dup);
+	return 0;
+}
+
+static int _alpm_option_strlist_set(alpm_handle_t *handle, alpm_list_t **list, alpm_list_t *newlist)
 {
 	CHECK_HANDLE(handle, return -1);
-	handle->noupgrade = alpm_list_add(handle->noupgrade, strdup(pkg));
+	FREELIST(*list);
+	*list = alpm_list_strdup(newlist);
 	return 0;
+}
+
+static int _alpm_option_strlist_rem(alpm_handle_t *handle, alpm_list_t **list, const char *str)
+{
+	char *vdata = NULL;
+	CHECK_HANDLE(handle, return -1);
+	*list = alpm_list_remove_str(*list, str, &vdata);
+	if(vdata != NULL) {
+		FREE(vdata);
+		return 1;
+	}
+	return 0;
+}
+
+int SYMEXPORT alpm_option_add_noupgrade(alpm_handle_t *handle, const char *pkg)
+{
+	return _alpm_option_strlist_add(handle, &(handle->noupgrade), pkg);
 }
 
 int SYMEXPORT alpm_option_set_noupgrades(alpm_handle_t *handle, alpm_list_t *noupgrade)
 {
-	CHECK_HANDLE(handle, return -1);
-	if(handle->noupgrade) FREELIST(handle->noupgrade);
-	handle->noupgrade = alpm_list_strdup(noupgrade);
-	return 0;
+	return _alpm_option_strlist_set(handle, &(handle->noupgrade), noupgrade);
 }
 
 int SYMEXPORT alpm_option_remove_noupgrade(alpm_handle_t *handle, const char *pkg)
 {
-	char *vdata = NULL;
-	CHECK_HANDLE(handle, return -1);
-	handle->noupgrade = alpm_list_remove_str(handle->noupgrade, pkg, &vdata);
-	if(vdata != NULL) {
-		FREE(vdata);
-		return 1;
-	}
-	return 0;
+	return _alpm_option_strlist_rem(handle, &(handle->noupgrade), pkg);
 }
 
-int SYMEXPORT alpm_option_add_noextract(alpm_handle_t *handle, const char *pkg)
+int SYMEXPORT alpm_option_match_noupgrade(alpm_handle_t *handle, const char *path)
 {
-	CHECK_HANDLE(handle, return -1);
-	handle->noextract = alpm_list_add(handle->noextract, strdup(pkg));
-	return 0;
+	return _alpm_fnmatch_patterns(handle->noupgrade, path);
+}
+
+int SYMEXPORT alpm_option_add_noextract(alpm_handle_t *handle, const char *path)
+{
+	return _alpm_option_strlist_add(handle, &(handle->noextract), path);
 }
 
 int SYMEXPORT alpm_option_set_noextracts(alpm_handle_t *handle, alpm_list_t *noextract)
 {
-	CHECK_HANDLE(handle, return -1);
-	if(handle->noextract) FREELIST(handle->noextract);
-	handle->noextract = alpm_list_strdup(noextract);
-	return 0;
+	return _alpm_option_strlist_set(handle, &(handle->noextract), noextract);
 }
 
-int SYMEXPORT alpm_option_remove_noextract(alpm_handle_t *handle, const char *pkg)
+int SYMEXPORT alpm_option_remove_noextract(alpm_handle_t *handle, const char *path)
 {
-	char *vdata = NULL;
-	CHECK_HANDLE(handle, return -1);
-	handle->noextract = alpm_list_remove_str(handle->noextract, pkg, &vdata);
-	if(vdata != NULL) {
-		FREE(vdata);
-		return 1;
-	}
-	return 0;
+	return _alpm_option_strlist_rem(handle, &(handle->noextract), path);
+}
+
+int SYMEXPORT alpm_option_match_noextract(alpm_handle_t *handle, const char *path)
+{
+	return _alpm_fnmatch_patterns(handle->noextract, path);
 }
 
 int SYMEXPORT alpm_option_add_ignorepkg(alpm_handle_t *handle, const char *pkg)
 {
-	CHECK_HANDLE(handle, return -1);
-	handle->ignorepkg = alpm_list_add(handle->ignorepkg, strdup(pkg));
-	return 0;
+	return _alpm_option_strlist_add(handle, &(handle->ignorepkg), pkg);
 }
 
 int SYMEXPORT alpm_option_set_ignorepkgs(alpm_handle_t *handle, alpm_list_t *ignorepkgs)
 {
-	CHECK_HANDLE(handle, return -1);
-	if(handle->ignorepkg) FREELIST(handle->ignorepkg);
-	handle->ignorepkg = alpm_list_strdup(ignorepkgs);
-	return 0;
+	return _alpm_option_strlist_set(handle, &(handle->ignorepkg), ignorepkgs);
 }
 
 int SYMEXPORT alpm_option_remove_ignorepkg(alpm_handle_t *handle, const char *pkg)
 {
-	char *vdata = NULL;
-	CHECK_HANDLE(handle, return -1);
-	handle->ignorepkg = alpm_list_remove_str(handle->ignorepkg, pkg, &vdata);
-	if(vdata != NULL) {
-		FREE(vdata);
-		return 1;
-	}
-	return 0;
+	return _alpm_option_strlist_rem(handle, &(handle->ignorepkg), pkg);
 }
 
 int SYMEXPORT alpm_option_add_ignoregroup(alpm_handle_t *handle, const char *grp)
 {
-	CHECK_HANDLE(handle, return -1);
-	handle->ignoregroup = alpm_list_add(handle->ignoregroup, strdup(grp));
-	return 0;
+	return _alpm_option_strlist_add(handle, &(handle->ignoregroup), grp);
 }
 
 int SYMEXPORT alpm_option_set_ignoregroups(alpm_handle_t *handle, alpm_list_t *ignoregrps)
 {
-	CHECK_HANDLE(handle, return -1);
-	if(handle->ignoregroup) FREELIST(handle->ignoregroup);
-	handle->ignoregroup = alpm_list_strdup(ignoregrps);
-	return 0;
+	return _alpm_option_strlist_set(handle, &(handle->ignoregroup), ignoregrps);
 }
 
 int SYMEXPORT alpm_option_remove_ignoregroup(alpm_handle_t *handle, const char *grp)
 {
-	char *vdata = NULL;
+	return _alpm_option_strlist_rem(handle, &(handle->ignoregroup), grp);
+}
+
+int SYMEXPORT alpm_option_add_assumeinstalled(alpm_handle_t *handle, const alpm_depend_t *dep)
+{
+	alpm_depend_t *depcpy;
 	CHECK_HANDLE(handle, return -1);
-	handle->ignoregroup = alpm_list_remove_str(handle->ignoregroup, grp, &vdata);
+	ASSERT(dep->mod == ALPM_DEP_MOD_EQ || dep->mod == ALPM_DEP_MOD_ANY,
+			RET_ERR(handle, ALPM_ERR_WRONG_ARGS, -1));
+	ASSERT((depcpy = _alpm_dep_dup(dep)), RET_ERR(handle, ALPM_ERR_MEMORY, -1));
+
+	/* fill in name_hash in case dep was built by hand */
+	depcpy->name_hash = _alpm_hash_sdbm(dep->name);
+	handle->assumeinstalled = alpm_list_add(handle->assumeinstalled, depcpy);
+	return 0;
+}
+
+int SYMEXPORT alpm_option_set_assumeinstalled(alpm_handle_t *handle, alpm_list_t *deps)
+{
+	CHECK_HANDLE(handle, return -1);
+	if(handle->assumeinstalled) {
+		alpm_list_free_inner(handle->assumeinstalled, (alpm_list_fn_free)alpm_dep_free);
+		alpm_list_free(handle->assumeinstalled);
+	}
+	while(deps) {
+		if(alpm_option_add_assumeinstalled(handle, deps->data) != 0) {
+			return -1;
+		}
+		deps = deps->next;
+	}
+	return 0;
+}
+
+static int assumeinstalled_cmp(const void *d1, const void *d2)
+{
+	const alpm_depend_t *dep1 = d1;
+	const alpm_depend_t *dep2 = d2;
+
+	if(dep1->name_hash != dep2->name_hash
+			|| strcmp(dep1->name, dep2->name) != 0) {
+		return -1;
+	}
+
+	if(dep1->version && dep2->version
+			&& strcmp(dep1->version, dep2->version) == 0) {
+		return 0;
+	}
+
+	if(dep1->version == NULL && dep2->version == NULL) {
+		return 0;
+	}
+
+
+	return -1;
+}
+
+int SYMEXPORT alpm_option_remove_assumeinstalled(alpm_handle_t *handle, const alpm_depend_t *dep)
+{
+	alpm_depend_t *vdata = NULL;
+	CHECK_HANDLE(handle, return -1);
+
+	handle->assumeinstalled = alpm_list_remove(handle->assumeinstalled, dep, &assumeinstalled_cmp, (void **)&vdata);
 	if(vdata != NULL) {
-		FREE(vdata);
+		alpm_dep_free(vdata);
 		return 1;
 	}
+
 	return 0;
 }
 
@@ -556,11 +728,7 @@ int SYMEXPORT alpm_option_set_arch(alpm_handle_t *handle, const char *arch)
 {
 	CHECK_HANDLE(handle, return -1);
 	if(handle->arch) FREE(handle->arch);
-	if(arch) {
-		handle->arch = strdup(arch);
-	} else {
-		handle->arch = NULL;
-	}
+	STRDUP(handle->arch, arch, RET_ERR(handle, ALPM_ERR_MEMORY, -1));
 	return 0;
 }
 
@@ -590,6 +758,21 @@ int SYMEXPORT alpm_option_set_checkspace(alpm_handle_t *handle, int checkspace)
 {
 	CHECK_HANDLE(handle, return -1);
 	handle->checkspace = checkspace;
+	return 0;
+}
+
+int SYMEXPORT alpm_option_set_dbext(alpm_handle_t *handle, const char *dbext)
+{
+	CHECK_HANDLE(handle, return -1);
+	ASSERT(dbext, RET_ERR(handle, ALPM_ERR_WRONG_ARGS, -1));
+
+	if(handle->dbext) {
+		FREE(handle->dbext);
+	}
+
+	STRDUP(handle->dbext, dbext, RET_ERR(handle, ALPM_ERR_MEMORY, -1));
+
+	_alpm_log(handle, ALPM_LOG_DEBUG, "option 'dbext' = %s\n", handle->dbext);
 	return 0;
 }
 

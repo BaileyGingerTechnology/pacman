@@ -1,7 +1,7 @@
 /*
  *  log.c
  *
- *  Copyright (c) 2006-2014 Pacman Development Team <pacman-dev@archlinux.org>
+ *  Copyright (c) 2006-2016 Pacman Development Team <pacman-dev@archlinux.org>
  *  Copyright (c) 2002-2006 by Judd Vinet <jvinet@zeroflux.org>
  *
  *  This program is free software; you can redistribute it and/or modify
@@ -21,6 +21,7 @@
 #include <stdio.h>
 #include <stdarg.h>
 #include <errno.h>
+#include <syslog.h>
 
 /* libalpm */
 #include "log.h"
@@ -33,6 +34,17 @@
  * @{
  */
 
+static int _alpm_log_leader(FILE *f, const char *prefix)
+{
+	time_t t = time(NULL);
+	struct tm *tm = localtime(&t);
+
+	/* Use ISO-8601 date format */
+	return fprintf(f, "[%04d-%02d-%02d %02d:%02d] [%s] ",
+			tm->tm_year + 1900, tm->tm_mon + 1, tm->tm_mday,
+			tm->tm_hour, tm->tm_min, prefix);
+}
+
 /** A printf-like function for logging.
  * @param handle the context handle
  * @param prefix caller-specific prefix for the log
@@ -42,23 +54,24 @@
 int SYMEXPORT alpm_logaction(alpm_handle_t *handle, const char *prefix,
 		const char *fmt, ...)
 {
-	int ret;
+	int ret = 0;
 	va_list args;
 
 	ASSERT(handle != NULL, return -1);
 
+	if(!(prefix && *prefix)) {
+		prefix = "UNKNOWN";
+	}
+
 	/* check if the logstream is open already, opening it if needed */
-	if(handle->logstream == NULL) {
+	if(handle->logstream == NULL && handle->logfile != NULL) {
 		int fd;
 		do {
 			fd = open(handle->logfile, O_WRONLY | O_APPEND | O_CREAT | O_CLOEXEC,
-					0000);
+					0644);
 		} while(fd == -1 && errno == EINTR);
-		if(fd >= 0) {
-			handle->logstream = fdopen(fd, "a");
-		}
 		/* if we couldn't open it, we have an issue */
-		if(fd < 0 || handle->logstream == NULL) {
+		if(fd < 0 || (handle->logstream = fdopen(fd, "a")) == NULL) {
 			if(errno == EACCES) {
 				handle->pm_errno = ALPM_ERR_BADPERMS;
 			} else if(errno == ENOENT) {
@@ -66,14 +79,31 @@ int SYMEXPORT alpm_logaction(alpm_handle_t *handle, const char *prefix,
 			} else {
 				handle->pm_errno = ALPM_ERR_SYSTEM;
 			}
-			return -1;
+			ret = -1;
 		}
 	}
 
 	va_start(args, fmt);
-	ret = _alpm_logaction(handle, prefix, fmt, args);
-	va_end(args);
 
+	if(handle->usesyslog) {
+		/* we can't use a va_list more than once, so we need to copy it
+		 * so we can use the original when calling vfprintf below. */
+		va_list args_syslog;
+		va_copy(args_syslog, args);
+		vsyslog(LOG_WARNING, fmt, args_syslog);
+		va_end(args_syslog);
+	}
+
+	if(handle->logstream) {
+		if(_alpm_log_leader(handle->logstream, prefix) < 0
+				|| vfprintf(handle->logstream, fmt, args) < 0) {
+			ret = -1;
+			handle->pm_errno = ALPM_ERR_SYSTEM;
+		}
+		fflush(handle->logstream);
+	}
+
+	va_end(args);
 	return ret;
 }
 
@@ -81,19 +111,15 @@ int SYMEXPORT alpm_logaction(alpm_handle_t *handle, const char *prefix,
 
 void _alpm_log(alpm_handle_t *handle, alpm_loglevel_t flag, const char *fmt, ...)
 {
-	alpm_event_log_t event = {
-		.type = ALPM_EVENT_LOG,
-		.level = flag,
-		.fmt = fmt
-	};
+	va_list args;
 
-	if(handle == NULL || handle->eventcb == NULL) {
+	if(handle == NULL || handle->logcb == NULL) {
 		return;
 	}
 
-	va_start(event.args, fmt);
-	EVENT(handle, &event);
-	va_end(event.args);
+	va_start(args, fmt);
+	handle->logcb(flag, fmt, args);
+	va_end(args);
 }
 
 /* vim: set noet: */

@@ -1,7 +1,7 @@
 /*
  *  remove.c
  *
- *  Copyright (c) 2006-2014 Pacman Development Team <pacman-dev@archlinux.org>
+ *  Copyright (c) 2006-2016 Pacman Development Team <pacman-dev@archlinux.org>
  *  Copyright (c) 2002-2006 by Judd Vinet <jvinet@zeroflux.org>
  *
  *  This program is free software; you can redistribute it and/or modify
@@ -43,9 +43,15 @@ static int remove_target(const char *target)
 
 	if((pkg = alpm_db_get_pkg(db_local, target)) != NULL) {
 		if(alpm_remove_pkg(config->handle, pkg) == -1) {
-			pm_printf(ALPM_LOG_ERROR, "'%s': %s\n", target,
-					alpm_strerror(alpm_errno(config->handle)));
-			return -1;
+			alpm_errno_t err = alpm_errno(config->handle);
+			if(err == ALPM_ERR_TRANS_DUP_TARGET) {
+				/* just skip duplicate targets */
+				pm_printf(ALPM_LOG_WARNING, _("skipping target: %s\n"), target);
+				return 0;
+			} else {
+				pm_printf(ALPM_LOG_ERROR, "'%s': %s\n", target, alpm_strerror(err));
+				return -1;
+			}
 		}
 		config->explicit_removes = alpm_list_add(config->explicit_removes, pkg);
 		return 0;
@@ -116,7 +122,8 @@ int pacman_remove(alpm_list_t *targets)
 				for(i = data; i; i = alpm_list_next(i)) {
 					alpm_depmissing_t *miss = i->data;
 					char *depstring = alpm_dep_compute_string(miss->depend);
-					colon_printf(_("%s: requires %s\n"), miss->target, depstring);
+					colon_printf(_("%s: removing %s breaks dependency '%s'\n"),
+							miss->target, miss->causingpkg, depstring);
 					free(depstring);
 					alpm_depmissing_free(miss);
 				}

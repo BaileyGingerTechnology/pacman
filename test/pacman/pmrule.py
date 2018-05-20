@@ -1,5 +1,5 @@
 #  Copyright (c) 2006 by Aurelien Foret <orelien@chez.com>
-#  Copyright (c) 2006-2014 Pacman Development Team <pacman-dev@archlinux.org>
+#  Copyright (c) 2006-2016 Pacman Development Team <pacman-dev@archlinux.org>
 #
 #  This program is free software; you can redistribute it and/or modify
 #  it under the terms of the GNU General Public License as published by
@@ -31,6 +31,12 @@ class pmrule(object):
 
     def __str__(self):
         return self.rule
+
+    def snapshots_needed(self):
+        (testname, args) = self.rule.split("=")
+        if testname == "FILE_MODIFIED" or testname == "!FILE_MODIFIED":
+            return [args]
+        return []
 
     def check(self, test):
         """
@@ -97,13 +103,11 @@ class pmrule(object):
                     if not value in newpkg.files:
                         success = 0
                 elif case == "BACKUP":
-                    found = 0
+                    success = 0
                     for f in newpkg.backup:
-                        name, md5sum = f.split("\t")
-                        if value == name:
-                            found = 1
-                    if not found:
-                        success = 0
+                        if f.startswith(value + "\t"):
+                            success = 1
+                            break;
                 else:
                     tap.diag("PKG rule '%s' not found" % case)
                     success = -1
@@ -115,6 +119,12 @@ class pmrule(object):
             elif case == "EMPTY":
                 if not (os.path.isfile(filename)
                         and os.path.getsize(filename) == 0):
+                    success = 0
+            elif case == "CONTENTS":
+                try:
+                    with open(filename, 'r') as f:
+                        success = f.read() == value
+                except:
                     success = 0
             elif case == "MODIFIED":
                 for f in test.files:
@@ -141,9 +151,6 @@ class pmrule(object):
                         success = 0
             elif case == "PACNEW":
                 if not os.path.isfile("%s.pacnew" % filename):
-                    success = 0
-            elif case == "PACORIG":
-                if not os.path.isfile("%s.pacorig" % filename):
                     success = 0
             elif case == "PACSAVE":
                 if not os.path.isfile("%s.pacsave" % filename):

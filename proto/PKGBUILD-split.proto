@@ -29,6 +29,7 @@ source=("$pkgbase-$pkgver.tar.gz"
         "$pkgname-$pkgver.patch")
 noextract=()
 md5sums=()
+validpgpkeys=()
 
 prepare() {
 	cd "$pkgname-$pkgver"
@@ -48,9 +49,6 @@ check() {
 
 package_pkg1() {
 	# options and directives that can be overridden
-	pkgver=
-	pkgrel=
-	epoch=
 	pkgdesc=""
 	arch=()
 	url=""

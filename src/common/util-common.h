@@ -1,7 +1,7 @@
 /*
  *  util-common.h
  *
- *  Copyright (c) 2006-2014 Pacman Development Team <pacman-dev@archlinux.org>
+ *  Copyright (c) 2006-2016 Pacman Development Team <pacman-dev@archlinux.org>
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
@@ -17,16 +17,27 @@
  *  along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#ifndef _PM_UTIL_COMMON_H
-#define _PM_UTIL_COMMON_H
+#ifndef PM_UTIL_COMMON_H
+#define PM_UTIL_COMMON_H
+
+#include <stdio.h>
+#include <sys/stat.h> /* struct stat */
 
 const char *mbasename(const char *path);
 char *mdirname(const char *path);
+
+int llstat(char *path, struct stat *buf);
+
+char *safe_fgets(char *s, int size, FILE *stream);
+
+size_t strtrim(char *str);
 
 #ifndef HAVE_STRNDUP
 char *strndup(const char *s, size_t n);
 #endif
 
-#endif /* _PM_UTIL_COMMON_H */
+#define ARRAYSIZE(a) (sizeof (a) / sizeof (a[0]))
+
+#endif /* PM_UTIL_COMMON_H */
 
 /* vim: set noet: */

@@ -1,7 +1,7 @@
 /*
  *  util.c
  *
- *  Copyright (c) 2006-2014 Pacman Development Team <pacman-dev@archlinux.org>
+ *  Copyright (c) 2006-2016 Pacman Development Team <pacman-dev@archlinux.org>
  *  Copyright (c) 2002-2006 by Judd Vinet <jvinet@zeroflux.org>
  *  Copyright (c) 2005 by Aurelien Foret <orelien@chez.com>
  *  Copyright (c) 2005 by Christian Hamar <krics@linuxforum.hu>
@@ -27,11 +27,11 @@
 #include <ctype.h>
 #include <dirent.h>
 #include <time.h>
-#include <syslog.h>
 #include <errno.h>
 #include <limits.h>
 #include <sys/wait.h>
 #include <fnmatch.h>
+#include <poll.h>
 
 /* libarchive */
 #include <archive.h>
@@ -446,59 +446,129 @@ ssize_t _alpm_files_in_directory(alpm_handle_t *handle, const char *path,
 	return files;
 }
 
-/** Write formatted message to log.
- * @param handle the context handle
- * @param format formatted string to write out
- * @param args formatting arguments
- * @return 0 or number of characters written on success, vfprintf return value
- * on error
- */
-int _alpm_logaction(alpm_handle_t *handle, const char *prefix,
-		const char *fmt, va_list args)
+static int should_retry(int errnum)
 {
-	int ret = 0;
+	return errnum == EAGAIN
+/* EAGAIN may be the same value as EWOULDBLOCK (POSIX.1) - prevent GCC warning */
+#if EAGAIN != EWOULDBLOCK
+	|| errnum == EWOULDBLOCK
+#endif
+	|| errnum == EINTR;
+}
 
-	if(!(prefix && *prefix)) {
-		prefix = "UNKNOWN";
+static int _alpm_chroot_write_to_child(alpm_handle_t *handle, int fd,
+		char *buf, ssize_t *buf_size, ssize_t buf_limit,
+		_alpm_cb_io out_cb, void *cb_ctx)
+{
+	ssize_t nwrite;
+	struct sigaction newaction, oldaction;
+
+	if(*buf_size == 0) {
+		/* empty buffer, ask the callback for more */
+		if((*buf_size = out_cb(buf, buf_limit, cb_ctx)) == 0) {
+			/* no more to write, close the pipe */
+			return -1;
+		}
 	}
 
-	if(handle->usesyslog) {
-		/* we can't use a va_list more than once, so we need to copy it
-		 * so we can use the original when calling vfprintf below. */
-		va_list args_syslog;
-		va_copy(args_syslog, args);
-		vsyslog(LOG_WARNING, fmt, args_syslog);
-		va_end(args_syslog);
+	/* ignore SIGPIPE in case the pipe has been closed */
+	newaction.sa_handler = SIG_IGN;
+	sigemptyset(&newaction.sa_mask);
+	newaction.sa_flags = 0;
+	sigaction(SIGPIPE, &newaction, &oldaction);
+
+	nwrite = write(fd, buf, *buf_size);
+
+	/* restore previous SIGPIPE handler */
+	sigaction(SIGPIPE, &oldaction, NULL);
+
+	if(nwrite != -1) {
+		/* write was successful, remove the written data from the buffer */
+		*buf_size -= nwrite;
+		memmove(buf, buf + nwrite, *buf_size);
+	} else if(should_retry(errno)) {
+		/* nothing written, try again later */
+	} else {
+		_alpm_log(handle, ALPM_LOG_ERROR,
+				_("unable to write to pipe (%s)\n"), strerror(errno));
+		return -1;
 	}
 
-	if(handle->logstream) {
-		time_t t;
-		struct tm *tm;
+	return 0;
+}
 
-		t = time(NULL);
-		tm = localtime(&t);
+static void _alpm_chroot_process_output(alpm_handle_t *handle, const char *line)
+{
+	alpm_event_scriptlet_info_t event = {
+		.type = ALPM_EVENT_SCRIPTLET_INFO,
+		.line = line
+	};
+	alpm_logaction(handle, "ALPM-SCRIPTLET", "%s", line);
+	EVENT(handle, &event);
+}
 
-		/* Use ISO-8601 date format */
-		fprintf(handle->logstream, "[%04d-%02d-%02d %02d:%02d] [%s] ",
-						tm->tm_year + 1900, tm->tm_mon + 1, tm->tm_mday,
-						tm->tm_hour, tm->tm_min, prefix);
-		ret = vfprintf(handle->logstream, fmt, args);
-		fflush(handle->logstream);
+static int _alpm_chroot_read_from_child(alpm_handle_t *handle, int fd,
+		char *buf, ssize_t *buf_size, ssize_t buf_limit)
+{
+	ssize_t space = buf_limit - *buf_size - 2; /* reserve 2 for "\n\0" */
+	ssize_t nread = read(fd, buf + *buf_size, space);
+	if(nread > 0) {
+		char *newline = memchr(buf + *buf_size, '\n', nread);
+		*buf_size += nread;
+		if(newline) {
+			while(newline) {
+				size_t linelen = newline - buf + 1;
+				char old = buf[linelen];
+				buf[linelen] = '\0';
+				_alpm_chroot_process_output(handle, buf);
+				buf[linelen] = old;
+
+				*buf_size -= linelen;
+				memmove(buf, buf + linelen, *buf_size);
+				newline = memchr(buf, '\n', *buf_size);
+			}
+		} else if(nread == space) {
+			/* we didn't read a full line, but we're out of space */
+			strcpy(buf + *buf_size, "\n");
+			_alpm_chroot_process_output(handle, buf);
+			*buf_size = 0;
+		}
+	} else if(nread == 0) {
+		/* end-of-file */
+		if(*buf_size) {
+			strcpy(buf + *buf_size, "\n");
+			_alpm_chroot_process_output(handle, buf);
+		}
+		return -1;
+	} else if(should_retry(errno)) {
+		/* nothing read, try again */
+	} else {
+		/* read error */
+		if(*buf_size) {
+			strcpy(buf + *buf_size, "\n");
+			_alpm_chroot_process_output(handle, buf);
+		}
+		_alpm_log(handle, ALPM_LOG_ERROR,
+				_("unable to read from pipe (%s)\n"), strerror(errno));
+		return -1;
 	}
-
-	return ret;
+	return 0;
 }
 
 /** Execute a command with arguments in a chroot.
  * @param handle the context handle
  * @param cmd command to execute
  * @param argv arguments to pass to cmd
+ * @param stdin_cb callback to provide input to the chroot on stdin
+ * @param stdin_ctx context to be passed to @a stdin_cb
  * @return 0 on success, 1 on error
  */
-int _alpm_run_chroot(alpm_handle_t *handle, const char *cmd, char *const argv[])
+int _alpm_run_chroot(alpm_handle_t *handle, const char *cmd, char *const argv[],
+		_alpm_cb_io stdin_cb, void *stdin_ctx)
 {
 	pid_t pid;
-	int pipefd[2], cwdfd;
+	int child2parent_pipefd[2], parent2child_pipefd[2];
+	int cwdfd;
 	int retval = 0;
 
 	/* save the cwd so we can restore it later */
@@ -520,7 +590,13 @@ int _alpm_run_chroot(alpm_handle_t *handle, const char *cmd, char *const argv[])
 	/* Flush open fds before fork() to avoid cloning buffers */
 	fflush(NULL);
 
-	if(pipe(pipefd) == -1) {
+	if(pipe(child2parent_pipefd) == -1) {
+		_alpm_log(handle, ALPM_LOG_ERROR, _("could not create pipe (%s)\n"), strerror(errno));
+		retval = 1;
+		goto cleanup;
+	}
+
+	if(pipe(parent2child_pipefd) == -1) {
 		_alpm_log(handle, ALPM_LOG_ERROR, _("could not create pipe (%s)\n"), strerror(errno));
 		retval = 1;
 		goto cleanup;
@@ -536,13 +612,19 @@ int _alpm_run_chroot(alpm_handle_t *handle, const char *cmd, char *const argv[])
 
 	if(pid == 0) {
 		/* this code runs for the child only (the actual chroot/exec) */
+		close(0);
 		close(1);
 		close(2);
-		while(dup2(pipefd[1], 1) == -1 && errno == EINTR);
-		while(dup2(pipefd[1], 2) == -1 && errno == EINTR);
-		close(pipefd[0]);
-		close(pipefd[1]);
-		close(cwdfd);
+		while(dup2(child2parent_pipefd[1], 1) == -1 && errno == EINTR);
+		while(dup2(child2parent_pipefd[1], 2) == -1 && errno == EINTR);
+		while(dup2(parent2child_pipefd[0], 0) == -1 && errno == EINTR);
+		close(parent2child_pipefd[0]);
+		close(parent2child_pipefd[1]);
+		close(child2parent_pipefd[0]);
+		close(child2parent_pipefd[1]);
+		if(cwdfd >= 0) {
+			close(cwdfd);
+		}
 
 		/* use fprintf instead of _alpm_log to send output through the parent */
 		if(chroot(handle->root) != 0) {
@@ -562,26 +644,66 @@ int _alpm_run_chroot(alpm_handle_t *handle, const char *cmd, char *const argv[])
 	} else {
 		/* this code runs for the parent only (wait on the child) */
 		int status;
-		FILE *pipe_file;
+		char obuf[PIPE_BUF]; /* writes <= PIPE_BUF are guaranteed atomic */
+		char ibuf[LINE_MAX];
+		ssize_t olen = 0, ilen = 0;
+		nfds_t nfds = 2;
+		struct pollfd fds[2], *child2parent = &(fds[0]), *parent2child = &(fds[1]);
 
-		close(pipefd[1]);
-		pipe_file = fdopen(pipefd[0], "r");
-		if(pipe_file == NULL) {
-			close(pipefd[0]);
-			retval = 1;
+		child2parent->fd = child2parent_pipefd[0];
+		child2parent->events = POLLIN;
+		fcntl(child2parent->fd, F_SETFL, O_NONBLOCK);
+		close(child2parent_pipefd[1]);
+		close(parent2child_pipefd[0]);
+
+		if(stdin_cb) {
+			parent2child->fd = parent2child_pipefd[1];
+			parent2child->events = POLLOUT;
+			fcntl(parent2child->fd, F_SETFL, O_NONBLOCK);
 		} else {
-			while(!feof(pipe_file)) {
-				char line[PATH_MAX];
-				alpm_event_scriptlet_info_t event = {
-					.type = ALPM_EVENT_SCRIPTLET_INFO,
-					.line = line
-				};
-				if(fgets(line, PATH_MAX, pipe_file) == NULL)
-					break;
-				alpm_logaction(handle, "ALPM-SCRIPTLET", "%s", line);
-				EVENT(handle, &event);
+			parent2child->fd = -1;
+			parent2child->events = 0;
+			close(parent2child_pipefd[1]);
+		}
+
+#define STOP_POLLING(p) do { close(p->fd); p->fd = -1; } while(0)
+
+		while((child2parent->fd != -1 || parent2child->fd != -1)
+				&& poll(fds, nfds, -1) > 0) {
+			if(child2parent->revents & POLLIN) {
+				if(_alpm_chroot_read_from_child(handle, child2parent->fd,
+							ibuf, &ilen, sizeof(ibuf)) != 0) {
+					/* we encountered end-of-file or an error */
+					STOP_POLLING(child2parent);
+				}
+			} else if(child2parent->revents) {
+				/* anything but POLLIN indicates an error */
+				STOP_POLLING(child2parent);
 			}
-			fclose(pipe_file);
+			if(parent2child->revents & POLLOUT) {
+				if(_alpm_chroot_write_to_child(handle, parent2child->fd, obuf, &olen,
+							sizeof(obuf), stdin_cb, stdin_ctx) != 0) {
+					STOP_POLLING(parent2child);
+				}
+			} else if(parent2child->revents) {
+				/* anything but POLLOUT indicates an error */
+				STOP_POLLING(parent2child);
+			}
+		}
+		/* process anything left in the input buffer */
+		if(ilen) {
+			/* buffer would have already been flushed if it had a newline */
+			strcpy(ibuf + ilen, "\n");
+			_alpm_chroot_process_output(handle, ibuf);
+		}
+
+#undef STOP_POLLING
+
+		if(parent2child->fd != -1) {
+			close(parent2child->fd);
+		}
+		if(child2parent->fd != -1) {
+			close(child2parent->fd);
 		}
 
 		while(waitpid(pid, &status, 0) == -1) {
@@ -592,11 +714,6 @@ int _alpm_run_chroot(alpm_handle_t *handle, const char *cmd, char *const argv[])
 			}
 		}
 
-		/* report error from above after the child has exited */
-		if(retval != 0) {
-			_alpm_log(handle, ALPM_LOG_ERROR, _("could not open pipe (%s)\n"), strerror(errno));
-			goto cleanup;
-		}
 		/* check the return status, make sure it is 0 (success) */
 		if(WIFEXITED(status)) {
 			_alpm_log(handle, ALPM_LOG_DEBUG, "call to waitpid succeeded\n");
@@ -645,7 +762,7 @@ int _alpm_ldconfig(alpm_handle_t *handle)
 			char arg0[32];
 			char *argv[] = { arg0, NULL };
 			strcpy(arg0, "ldconfig");
-			return _alpm_run_chroot(handle, LDCONFIG, argv);
+			return _alpm_run_chroot(handle, LDCONFIG, argv, NULL, NULL);
 		}
 	}
 
@@ -740,31 +857,6 @@ const char *_alpm_filecache_setup(alpm_handle_t *handle)
 	_alpm_log(handle, ALPM_LOG_WARNING,
 			_("couldn't find or create package cache, using %s instead\n"), cachedir);
 	return cachedir;
-}
-
-/** lstat wrapper that treats /path/dirsymlink/ the same as /path/dirsymlink.
- * Linux lstat follows POSIX semantics and still performs a dereference on
- * the first, and for uses of lstat in libalpm this is not what we want.
- * @param path path to file to lstat
- * @param buf structure to fill with stat information
- * @return the return code from lstat
- */
-int _alpm_lstat(const char *path, struct stat *buf)
-{
-	int ret;
-	size_t len = strlen(path);
-
-	/* strip the trailing slash if one exists */
-	if(len != 0 && path[len - 1] == '/') {
-		char *newpath = strdup(path);
-		newpath[len - 1] = '\0';
-		ret = lstat(newpath, buf);
-		free(newpath);
-	} else {
-		ret = lstat(path, buf);
-	}
-
-	return ret;
 }
 
 #ifdef HAVE_LIBSSL
@@ -1350,12 +1442,12 @@ void *_alpm_greedy_grow(void **data, size_t *current, const size_t required)
 		return NULL;
 	}
 
-	return _alpm_realloc(data, current, required);
+	return _alpm_realloc(data, current, newsize);
 }
 
 void _alpm_alloc_fail(size_t size)
 {
-	fprintf(stderr, "alloc failure: could not allocate %zd bytes\n", size);
+	fprintf(stderr, "alloc failure: could not allocate %zu bytes\n", size);
 }
 
 /* vim: set noet: */

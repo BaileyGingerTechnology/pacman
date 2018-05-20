@@ -1,5 +1,10 @@
 # enforce that all scripts have a --help and --version option
 AUTOMAKE_OPTIONS = std-options
+AM_INSTALLCHECK_STD_OPTIONS_EXEMPT = \
+	makepkg-wrapper \
+	pacman-db-upgrade-wrapper \
+	pacman-key-wrapper \
+	pkgdelta-wrapper
 
 SUBDIRS = po
 
@@ -27,7 +32,9 @@ EXTRA_DIST = \
 	pacman-optimize.sh.in \
 	pkgdelta.sh.in \
 	repo-add.sh.in \
-	$(LIBRARY)
+	$(COMPLETION_DIST) \
+	$(LIBRARY) \
+	$(LIBMAKEPKG_DIST)
 
 LIBRARY = \
 	library/output_format.sh \
@@ -36,10 +43,73 @@ LIBRARY = \
 	library/size_to_human.sh \
 	library/term_colors.sh
 
-# Files that should be removed, but which Automake does not know.
-MOSTLYCLEANFILES = $(bin_SCRIPTS)
+libmakepkgdir = $(datarootdir)/makepkg
 
-libmakepkgdir = $(libdir)/makepkg
+LIBMAKEPKGDIRS = \
+	lint_package \
+	lint_pkgbuild \
+	source \
+	tidy \
+	util
+
+LIBMAKEPKG_IN = \
+	libmakepkg/lint_package.sh \
+	libmakepkg/lint_package/build_references.sh \
+	libmakepkg/lint_package/missing_backup.sh \
+	libmakepkg/lint_pkgbuild.sh \
+	libmakepkg/lint_pkgbuild/arch.sh \
+	libmakepkg/lint_pkgbuild/backup.sh \
+	libmakepkg/lint_pkgbuild/changelog.sh \
+	libmakepkg/lint_pkgbuild/epoch.sh \
+	libmakepkg/lint_pkgbuild/install.sh \
+	libmakepkg/lint_pkgbuild/optdepends.sh \
+	libmakepkg/lint_pkgbuild/options.sh \
+	libmakepkg/lint_pkgbuild/package_function.sh \
+	libmakepkg/lint_pkgbuild/pkgbase.sh \
+	libmakepkg/lint_pkgbuild/pkglist.sh \
+	libmakepkg/lint_pkgbuild/pkgname.sh \
+	libmakepkg/lint_pkgbuild/pkgrel.sh \
+	libmakepkg/lint_pkgbuild/pkgver.sh \
+	libmakepkg/lint_pkgbuild/provides.sh \
+	libmakepkg/lint_pkgbuild/source.sh \
+	libmakepkg/lint_pkgbuild/util.sh \
+	libmakepkg/lint_pkgbuild/variable.sh \
+	libmakepkg/source.sh \
+	libmakepkg/source/bzr.sh \
+	libmakepkg/source/file.sh \
+	libmakepkg/source/git.sh \
+	libmakepkg/source/hg.sh \
+	libmakepkg/source/local.sh \
+	libmakepkg/source/svn.sh \
+	libmakepkg/tidy.sh \
+	libmakepkg/tidy/docs.sh \
+	libmakepkg/tidy/emptydirs.sh \
+	libmakepkg/tidy/libtool.sh \
+	libmakepkg/tidy/optipng.sh \
+	libmakepkg/tidy/purge.sh \
+	libmakepkg/tidy/staticlibs.sh \
+	libmakepkg/tidy/strip.sh \
+	libmakepkg/tidy/upx.sh \
+	libmakepkg/tidy/zipman.sh \
+	libmakepkg/util.sh \
+	libmakepkg/util/message.sh \
+	libmakepkg/util/option.sh \
+	libmakepkg/util/pkgbuild.sh \
+	libmakepkg/util/source.sh \
+	libmakepkg/util/util.sh
+
+LIBMAKEPKG_DIST = \
+	$(addsuffix .in, $(LIBMAKEPKG_IN))
+
+COMPLETION_IN = \
+	completion/bash_completion \
+	completion/zsh_completion
+
+COMPLETION_DIST = \
+	$(addsuffix .in, $(COMPLETION_IN))
+
+# Files that should be removed, but which Automake does not know.
+MOSTLYCLEANFILES = $(bin_SCRIPTS) $(LIBMAKEPKG_IN) $(COMPLETION_IN)
 
 clean-local:
 	$(AM_V_at)$(RM) -r .lib
@@ -53,6 +123,7 @@ endif
 
 #### Taken from the autoconf scripts Makefile.am ####
 edit = sed \
+	-e 's|@rootdir[@]|$(ROOTDIR)|g' \
 	-e 's|@localedir[@]|$(localedir)|g' \
 	-e 's|@sysconfdir[@]|$(sysconfdir)|g' \
 	-e 's|@localstatedir[@]|$(localstatedir)|g' \
@@ -67,6 +138,8 @@ edit = sed \
 	-e 's|@TEMPLATE_DIR[@]|$(TEMPLATE_DIR)|g' \
 	-e 's|@DEBUGSUFFIX[@]|$(DEBUGSUFFIX)|g' \
 	-e "s|@INODECMD[@]|$(INODECMD)|g" \
+	-e "s|@OWNERCMD[@]|$(OWNERCMD)|g" \
+	-e "s|@MODECMD[@]|$(MODECMD)|g" \
 	-e 's|@SIZECMD[@]|$(SIZECMD)|g' \
 	-e 's|@SEDINPLACE[@]|$(SEDINPLACE)|g' \
 	-e 's|@DUFLAGS[@]|$(DUFLAGS)|g' \
@@ -83,10 +156,26 @@ $(OURSCRIPTS): Makefile
 	$(AM_V_at)chmod +x,a-w $@
 	@$(BASH_SHELL) -O extglob -n $@
 
+$(LIBMAKEPKG_IN): %: %.in Makefile
+	$(AM_V_at)$(RM) $@
+	$(AM_V_at)$(MKDIR_P) $(dir $@)
+	$(AM_V_GEN)test -f $(srcdir)/$@.in && $(edit) $(srcdir)/$@.in >$@
+	$(AM_V_at)chmod a-w $@
+	@$(BASH_SHELL) -O extglob -n $@
+
+$(COMPLETION_IN): %: %.in Makefile
+	$(AM_V_at)$(RM) $@
+	$(AM_V_at)$(MKDIR_P) $(dir $@)
+	$(AM_V_GEN)$(edit) $(srcdir)/$@.in >$@
+	$(AM_V_at)chmod a-w $@
+
+all-am: $(COMPLETION_IN)
+
 makepkg: \
 	$(srcdir)/makepkg.sh.in \
 	$(srcdir)/makepkg-wrapper.sh.in \
-	$(srcdir)/library/parseopts.sh
+	$(srcdir)/library/parseopts.sh \
+	$(LIBMAKEPKG_IN)
 
 makepkg-template: \
 	$(srcdir)/makepkg-template.pl.in \
@@ -127,11 +216,8 @@ repo-elephant: $(srcdir)/repo-add.sh.in
 	$(AM_V_at)$(LN_S) repo-add repo-elephant
 
 makepkg-wrapper: \
-	Makefile \
-	$(srcdir)/makepkg-wrapper.sh.in \
-	$(srcdir)/makepkg.sh.in \
-	$(srcdir)/library/parseopts.sh \
-	| makepkg
+	makepkg
+
 	$(AM_V_at)$(MKDIR_P) .lib
 	$(AM_V_at)mv -f makepkg .lib
 	$(AM_V_at)$(RM) $@
@@ -142,10 +228,29 @@ makepkg-wrapper: \
 	$(AM_V_at)chmod +x,a-w $@
 	$(AM_V_at)$(LN_S) makepkg-wrapper makepkg
 
+install-data-local:
+	$(MKDIR_P) $(DESTDIR)$(sysconfdir)/bash_completion.d/
+	$(INSTALL_DATA) completion/bash_completion $(DESTDIR)$(sysconfdir)/bash_completion.d/pacman
+	$(MKDIR_P) $(DESTDIR)$(datarootdir)/zsh/site-functions/
+	$(INSTALL_DATA) completion/zsh_completion $(DESTDIR)$(datarootdir)/zsh/site-functions/_pacman
+
+uninstall-local:
+	$(RM) $(DESTDIR)$(sysconfdir)/bash_completion.d/pacman
+	$(RM) $(DESTDIR)$(datarootdir)/zsh/site-functions/_pacman
+
 install-exec-hook:
 	cd $(DESTDIR)$(bindir) && \
 		$(RM) makepkg makepkg-wrapper
 	$(INSTALL) .lib/makepkg $(DESTDIR)$(bindir)/makepkg
+	for dir in $(LIBMAKEPKGDIRS); do \
+		$(MKDIR_P) $(DESTDIR)$(libmakepkgdir)/$$dir; \
+	done
+	for lib in $(LIBMAKEPKG); do \
+		$(INSTALL) $(srcdir)/$$lib $(DESTDIR)$(libmakepkgdir)/$${lib#libmakepkg}; \
+	done
+	for lib in $(LIBMAKEPKG_IN); do \
+		$(INSTALL) $$lib $(DESTDIR)$(libmakepkgdir)/$${lib#libmakepkg}; \
+	done
 	cd $(DESTDIR)$(bindir) && \
 		$(RM) repo-elephant && \
 		( $(LN_S) repo-add repo-elephant || \
@@ -160,5 +265,12 @@ install-exec-hook:
 uninstall-hook:
 	cd $(DESTDIR)$(bindir) && \
 		$(RM) repo-remove repo-elephant
+	for lib in $(LIBMAKEPKG) $(LIBMAKEPKG_IN); do \
+		$(RM) $(DESTDIR)$(libmakepkgdir)/$${lib#libmakepkg}; \
+	done
+	for dir in $(LIBMAKEPKGDIRS); do \
+		$(RM) -r $(DESTDIR)$(libmakepkgdir)/$$dir; \
+	done
+
 
 # vim:set noet:

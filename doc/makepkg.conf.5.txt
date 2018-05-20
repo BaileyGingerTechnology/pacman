@@ -11,7 +11,7 @@ makepkg.conf - makepkg configuration file
 
 Synopsis
 --------
-{sysconfdir}/makepkg.conf, ~/.makepkg.conf
+{sysconfdir}/makepkg.conf, $XDG_CONFIG_HOME/pacman/makepkg.conf, ~/.makepkg.conf
 
 
 Description
@@ -27,7 +27,8 @@ variables. Some of them are non-standard.
 
 The system-wide configuration file is found in {sysconfdir}/makepkg.conf.
 Individual options can be overridden (or added to) on a per-user basis in
-~/.makepkg.conf.
+$XDG_CONFIG_HOME/pacman/makepkg.conf or ~/.makepkg.conf, with the former
+taking priority.
 
 The default file is fairly well commented, so it may be easiest to simply
 follow directions given there for customization.
@@ -38,13 +39,19 @@ Options
 **DLAGENTS=(**\'protocol::/path/to/command [options]' ...**)**::
 	Sets the download agents used to fetch source files specified with a URL in
 	the linkman:PKGBUILD[5] file. Options can be specified for each command as
-	well, and any protocol can have a download agent. Several examples are provided
-	in the default makepkg.conf.
+	well, and any protocol can have a download agent.  Any spaces in option
+	arguments are required to be escaped to avoid being split.  Several
+	examples are provided in the default makepkg.conf.
 	+
 	If present, `%u` will be replaced with the download URL. Otherwise, the
 	download URL will be placed on the end of the command. If present, `%o` will
 	be replaced with the local file name, plus a ``.part'' extension, which allows
 	makepkg to handle resuming file downloads.
+
+**VCSCLIENTS=(**\'protocol::package' ...**)**::
+	Sets the packages required to fetch version controlled source files. When
+	required, makepkg will check that these packages are installed or are included
+	in the `depends` or `makedepends` arrays in the PKGBUILD.
 
 **CARCH=**"carch"::
 	Specifies your computer architecture; possible values include such things
@@ -52,11 +59,11 @@ Options
 	installation.
 
 **CHOST=**"chost"::
-	A string such as ``i686-pc-linux-gnu''; do not touch unless you know what
+	A string such as ``i686-pc-linux-gnu''; do not touch this unless you know what
 	you are doing. This can be commented out by most users if desired.
 
 **CPPFLAGS=**"cppflags"::
-	Flags used for the C preprocessor; see CFLAGS for more info.
+	Flags used for the C preprocessor; see CFLAGS for more information.
 
 **CFLAGS=**"cflags"::
 	Flags used for the C compiler. This is a key part to the use of makepkg.
@@ -134,7 +141,7 @@ Options
 	Specify a key to use for GPG signing instead of the default key in the
 	keyring. Can be overridden with makepkg's '\--key' option.
 
-**OPTIONS=(**strip docs libtool staticlibs emptydirs zipman purge !upx**)**::
+**OPTIONS=(**strip docs libtool staticlibs emptydirs zipman purge !upx !optipng**)**::
 	This array contains options that affect default packaging. They are
 	equivalent to options that can be placed in the PKGBUILD; the defaults are
 	shown here. All options should always be left in the array; to enable or
@@ -172,8 +179,12 @@ Options
 		package.
 
 	*upx*;;
-		Compress binary executable files using UPX.  Additional options
-		can be passed to UPX by specifying the `UPXFLAGS` variable.
+		Compress binary executable files using UPX. Additional options
+		can be passed to UPX by specifying the `UPXFLAGS` array variable.
+
+	*optipng*;;
+		Optimize PNG images with optipng. Additional options can be passed
+		to optipng by specifying the `OPTIPNGFLAGS` array variable.
 
 	*debug*;;
 		Add the user-specified debug flags as specified in DEBUG_CFLAGS and
@@ -254,6 +265,7 @@ Options
 	Valid suffixes are `.tar`, `.tar.gz`, `.tar.bz2`, `.tar.xz`,
 	`.tar.lzo`, `.tar.lrz`, and `.tar.Z`.
 	Do not touch these unless you know what you are doing.
+
 
 See Also
 --------

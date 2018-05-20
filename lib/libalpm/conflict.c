@@ -1,7 +1,7 @@
 /*
  *  conflict.c
  *
- *  Copyright (c) 2006-2014 Pacman Development Team <pacman-dev@archlinux.org>
+ *  Copyright (c) 2006-2016 Pacman Development Team <pacman-dev@archlinux.org>
  *  Copyright (c) 2002-2006 by Judd Vinet <jvinet@zeroflux.org>
  *  Copyright (c) 2005 by Aurelien Foret <orelien@chez.com>
  *  Copyright (c) 2006 by David Kimpe <dnaku@frugalware.org>
@@ -48,15 +48,19 @@ static alpm_conflict_t *conflict_new(alpm_pkg_t *pkg1, alpm_pkg_t *pkg2,
 {
 	alpm_conflict_t *conflict;
 
-	MALLOC(conflict, sizeof(alpm_conflict_t), return NULL);
+	CALLOC(conflict, 1, sizeof(alpm_conflict_t), return NULL);
 
 	conflict->package1_hash = pkg1->name_hash;
 	conflict->package2_hash = pkg2->name_hash;
-	STRDUP(conflict->package1, pkg1->name, return NULL);
-	STRDUP(conflict->package2, pkg2->name, return NULL);
+	STRDUP(conflict->package1, pkg1->name, goto error);
+	STRDUP(conflict->package2, pkg2->name, goto error);
 	conflict->reason = reason;
 
 	return conflict;
+
+error:
+	alpm_conflict_free(conflict);
+	return NULL;
 }
 
 /**
@@ -64,6 +68,7 @@ static alpm_conflict_t *conflict_new(alpm_pkg_t *pkg1, alpm_pkg_t *pkg2,
  */
 void SYMEXPORT alpm_conflict_free(alpm_conflict_t *conflict)
 {
+	ASSERT(conflict != NULL, return);
 	FREE(conflict->package2);
 	FREE(conflict->package1);
 	FREE(conflict);
@@ -79,11 +84,15 @@ alpm_conflict_t *_alpm_conflict_dup(const alpm_conflict_t *conflict)
 
 	newconflict->package1_hash = conflict->package1_hash;
 	newconflict->package2_hash = conflict->package2_hash;
-	STRDUP(newconflict->package1, conflict->package1, return NULL);
-	STRDUP(newconflict->package2, conflict->package2, return NULL);
+	STRDUP(newconflict->package1, conflict->package1, goto error);
+	STRDUP(newconflict->package2, conflict->package2, goto error);
 	newconflict->reason = conflict->reason;
 
 	return newconflict;
+
+error:
+	alpm_conflict_free(newconflict);
+	return NULL;
 }
 
 /**
@@ -265,7 +274,7 @@ static alpm_list_t *add_fileconflict(alpm_handle_t *handle,
 		alpm_pkg_t *pkg1, alpm_pkg_t *pkg2)
 {
 	alpm_fileconflict_t *conflict;
-	MALLOC(conflict, sizeof(alpm_fileconflict_t), goto error);
+	CALLOC(conflict, 1, sizeof(alpm_fileconflict_t), goto error);
 
 	STRDUP(conflict->target, pkg1->name, goto error);
 	STRDUP(conflict->file, filestr, goto error);
@@ -284,6 +293,7 @@ static alpm_list_t *add_fileconflict(alpm_handle_t *handle,
 	return conflicts;
 
 error:
+	alpm_fileconflict_free(conflict);
 	RET_ERR(handle, ALPM_ERR_MEMORY, conflicts);
 }
 
@@ -292,6 +302,7 @@ error:
  */
 void SYMEXPORT alpm_fileconflict_free(alpm_fileconflict_t *conflict)
 {
+	ASSERT(conflict != NULL, return);
 	FREE(conflict->ctarget);
 	FREE(conflict->file);
 	FREE(conflict->target);
@@ -449,7 +460,9 @@ alpm_list_t *_alpm_db_find_fileconflicts(alpm_handle_t *handle,
 
 					conflicts = add_fileconflict(handle, conflicts, path, p1, p2);
 					if(handle->pm_errno == ALPM_ERR_MEMORY) {
-						FREELIST(conflicts);
+						alpm_list_free_inner(conflicts,
+								(alpm_list_fn_free) alpm_conflict_free);
+						alpm_list_free(conflicts);
 						alpm_list_free(common_files);
 						return NULL;
 					}
@@ -495,7 +508,7 @@ alpm_list_t *_alpm_db_find_fileconflicts(alpm_handle_t *handle,
 			relative_path = path + rootlen;
 
 			/* stat the file - if it exists, do some checks */
-			if(_alpm_lstat(path, &lsbuf) != 0) {
+			if(llstat(path, &lsbuf) != 0) {
 				continue;
 			}
 
@@ -553,6 +566,8 @@ alpm_list_t *_alpm_db_find_fileconflicts(alpm_handle_t *handle,
 
 				/* localp2->files will be removed (target conflicts are handled by CHECK 1) */
 				if(localp2 && alpm_filelist_contains(alpm_pkg_get_files(localp2), relative_path)) {
+					size_t fslen = strlen(filestr);
+
 					/* skip removal of file, but not add. this will prevent a second
 					 * package from removing the file when it was already installed
 					 * by its new owner (whether the file is in backup array or not */
@@ -561,6 +576,19 @@ alpm_list_t *_alpm_db_find_fileconflicts(alpm_handle_t *handle,
 					_alpm_log(handle, ALPM_LOG_DEBUG,
 							"file changed packages, adding to remove skiplist\n");
 					resolved_conflict = 1;
+
+					if(filestr[fslen - 1] == '/') {
+						/* replacing a file with a directory:
+						 * go ahead and skip any files inside filestr as they will
+						 * necessarily be resolved by replacing the file with a dir
+						 * NOTE: afterward, j will point to the last file inside filestr */
+						for( ; j->next; j = j->next) {
+							const char *filestr2 = j->next->data;
+							if(strncmp(filestr, filestr2, fslen) != 0) {
+								break;
+							}
+						}
+					}
 				}
 			}
 
@@ -622,7 +650,9 @@ alpm_list_t *_alpm_db_find_fileconflicts(alpm_handle_t *handle,
 			if(!resolved_conflict) {
 				conflicts = add_fileconflict(handle, conflicts, path, p1, NULL);
 				if(handle->pm_errno == ALPM_ERR_MEMORY) {
-					FREELIST(conflicts);
+					alpm_list_free_inner(conflicts,
+							(alpm_list_fn_free) alpm_conflict_free);
+					alpm_list_free(conflicts);
 					alpm_list_free(tmpfiles);
 					return NULL;
 				}

@@ -1,7 +1,7 @@
 /*
  *  pacman.c
  *
- *  Copyright (c) 2006-2014 Pacman Development Team <pacman-dev@archlinux.org>
+ *  Copyright (c) 2006-2016 Pacman Development Team <pacman-dev@archlinux.org>
  *  Copyright (c) 2002-2006 by Judd Vinet <jvinet@zeroflux.org>
  *
  *  This program is free software; you can redistribute it and/or modify
@@ -30,7 +30,6 @@
 #include <limits.h>
 #include <getopt.h>
 #include <string.h>
-#include <signal.h>
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/utsname.h> /* uname */
@@ -45,6 +44,7 @@
 #include "pacman.h"
 #include "util.h"
 #include "conf.h"
+#include "sighandler.h"
 
 /* list of targets specified on command line */
 static alpm_list_t *pm_targets;
@@ -97,11 +97,11 @@ static void usage(int op, const char * const myname)
 	alpm_list_t *list = NULL, *i;
 	/* prefetch some strings for usage below, which moves a lot of calls
 	 * out of gettext. */
-	char const * const str_opt = _("options");
-	char const * const str_file = _("file(s)");
-	char const * const str_pkg = _("package(s)");
-	char const * const str_usg = _("usage");
-	char const * const str_opr = _("operation");
+	char const *const str_opt  = _("options");
+	char const *const str_file = _("file(s)");
+	char const *const str_pkg  = _("package(s)");
+	char const *const str_usg  = _("usage");
+	char const *const str_opr  = _("operation");
 
 	/* please limit your strings to 80 characters in width */
 	if(op == PM_OP_MAIN) {
@@ -110,6 +110,7 @@ static void usage(int op, const char * const myname)
 		printf("    %s {-h --help}\n", myname);
 		printf("    %s {-V --version}\n", myname);
 		printf("    %s {-D --database} <%s> <%s>\n", myname, str_opt, str_pkg);
+		printf("    %s {-F --files}    [%s] [%s]\n", myname, str_opt, str_pkg);
 		printf("    %s {-Q --query}    [%s] [%s]\n", myname, str_opt, str_pkg);
 		printf("    %s {-R --remove}   [%s] <%s>\n", myname, str_opt, str_pkg);
 		printf("    %s {-S --sync}     [%s] [%s]\n", myname, str_opt, str_pkg);
@@ -139,7 +140,7 @@ static void usage(int op, const char * const myname)
 			addlist(_("  -g, --groups         view all members of a package group\n"));
 			addlist(_("  -i, --info           view package information (-ii for backup files)\n"));
 			addlist(_("  -k, --check          check that package files exist (-kk for file properties)\n"));
-			addlist(_("  -l, --list           list the contents of the queried package\n"));
+			addlist(_("  -l, --list           list the files owned by the queried package\n"));
 			addlist(_("  -m, --foreign        list installed packages not found in sync db(s) [filter]\n"));
 			addlist(_("  -n, --native         list installed packages only found in sync db(s) [filter]\n"));
 			addlist(_("  -o, --owns <file>    query the package that owns <file>\n"));
@@ -153,23 +154,36 @@ static void usage(int op, const char * const myname)
 			printf("%s:  %s {-S --sync} [%s] [%s]\n", str_usg, myname, str_opt, str_pkg);
 			printf("%s:\n", str_opt);
 			addlist(_("  -c, --clean          remove old packages from cache directory (-cc for all)\n"));
-			addlist(_("  -g, --groups         view all members of a package group\n"));
-			addlist(_("  -i, --info           view package information\n"));
+			addlist(_("  -g, --groups         view all members of a package group\n"
+			          "                       (-gg to view all groups and members)\n"));
+			addlist(_("  -i, --info           view package information (-ii for extended information)\n"));
 			addlist(_("  -l, --list <repo>    view a list of packages in a repo\n"));
 			addlist(_("  -q, --quiet          show less information for query and search\n"));
 			addlist(_("  -s, --search <regex> search remote repositories for matching strings\n"));
-			addlist(_("  -u, --sysupgrade     upgrade installed packages (-uu allows downgrade)\n"));
+			addlist(_("  -u, --sysupgrade     upgrade installed packages (-uu enables downgrades)\n"));
 			addlist(_("  -w, --downloadonly   download packages but do not install/upgrade anything\n"));
-			addlist(_("  -y, --refresh        download fresh package databases from the server\n"));
+			addlist(_("  -y, --refresh        download fresh package databases from the server\n"
+			          "                       (-yy to force a refresh even if up to date)\n"));
 			addlist(_("      --needed         do not reinstall up to date packages\n"));
 		} else if(op == PM_OP_DATABASE) {
 			printf("%s:  %s {-D --database} <%s> <%s>\n", str_usg, myname, str_opt, str_pkg);
 			printf("%s:\n", str_opt);
 			addlist(_("      --asdeps         mark packages as non-explicitly installed\n"));
 			addlist(_("      --asexplicit     mark packages as explicitly installed\n"));
+			addlist(_("  -k, --check          test local database for validity (-kk for sync databases)\n"));
 		} else if(op == PM_OP_DEPTEST) {
 			printf("%s:  %s {-T --deptest} [%s] [%s]\n", str_usg, myname, str_opt, str_pkg);
 			printf("%s:\n", str_opt);
+		} else if(op == PM_OP_FILES) {
+			addlist(_("  -l, --list           list the files owned by the queried package\n"));
+			addlist(_("  -o, --owns <file>    query the package that owns <file>\n"));
+			addlist(_("  -q, --quiet          show less information for query and search\n"));
+			addlist(_("  -s, --search <file>  search package file names for matching strings\n"));
+			addlist(_("  -x, --regex          enable searching using regular expressions\n"));
+			addlist(_("  -y, --refresh        download fresh package databases from the server\n"
+			          "                       (-yy to force a refresh even if up to date)\n"));
+			addlist(_("      --machinereadable\n"
+			          "                       produce machine-readable output\n"));
 		}
 		switch(op) {
 			case PM_OP_SYNC:
@@ -183,6 +197,8 @@ static void usage(int op, const char * const myname)
 				/* pass through */
 			case PM_OP_REMOVE:
 				addlist(_("  -d, --nodeps         skip dependency version checks (-dd to skip all checks)\n"));
+				addlist(_("      --assume-installed <package=version>\n"
+				          "                       add a virtual package to satisfy dependencies\n"));
 				addlist(_("      --dbonly         only modify database entries, not package files\n"));
 				addlist(_("      --noprogressbar  do not show a progress bar when downloading files\n"));
 				addlist(_("      --noscriptlet    do not execute the install scriptlet if one exists\n"));
@@ -197,12 +213,14 @@ static void usage(int op, const char * const myname)
 		addlist(_("  -v, --verbose        be verbose\n"));
 		addlist(_("      --arch <arch>    set an alternate architecture\n"));
 		addlist(_("      --cachedir <dir> set an alternate package cache location\n"));
+		addlist(_("      --hookdir <dir>  set an alternate hook location\n"));
 		addlist(_("      --color <when>   colorize the output\n"));
 		addlist(_("      --config <path>  set an alternate configuration file\n"));
 		addlist(_("      --debug          display debug messages\n"));
 		addlist(_("      --gpgdir <path>  set an alternate home directory for GnuPG\n"));
 		addlist(_("      --logfile <path> set an alternate log file\n"));
 		addlist(_("      --noconfirm      do not ask for any confirmation\n"));
+		addlist(_("      --confirm        always ask for confirmation\n"));
 	}
 	list = alpm_list_msort(list, alpm_list_count(list), options_cmp);
 	for(i = list; i; i = alpm_list_next(i)) {
@@ -218,7 +236,7 @@ static void version(void)
 {
 	printf("\n");
 	printf(" .--.                  Pacman v%s - libalpm v%s\n", PACKAGE_VERSION, alpm_version());
-	printf("/ _.-' .-.  .-.  .-.   Copyright (C) 2006-2014 Pacman Development Team\n");
+	printf("/ _.-' .-.  .-.  .-.   Copyright (C) 2006-2016 Pacman Development Team\n");
 	printf("\\  '-. '-'  '-'  '-'   Copyright (C) 2002-2006 Judd Vinet\n");
 	printf(" '--'\n");
 	printf(_("                       This program may be freely redistributed under\n"
@@ -261,6 +279,7 @@ static void setuseragent(void)
  */
 static void cleanup(int ret)
 {
+	remove_soft_interrupt_handler();
 	if(config) {
 		/* free alpm library resources */
 		if(config->handle && alpm_release(config->handle) == -1) {
@@ -276,51 +295,6 @@ static void cleanup(int ret)
 	exit(ret);
 }
 
-/** Write function that correctly handles EINTR.
- */
-static ssize_t xwrite(int fd, const void *buf, size_t count)
-{
-	ssize_t ret;
-	do {
-		ret = write(fd, buf, count);
-	} while(ret == -1 && errno == EINTR);
-	return ret;
-}
-
-/** Catches thrown signals. Performs necessary cleanup to ensure database is
- * in a consistent state.
- * @param signum the thrown signal
- */
-static void handler(int signum)
-{
-	int out = fileno(stdout);
-	int err = fileno(stderr);
-	const char *msg;
-	if(signum == SIGSEGV) {
-		msg = "\nerror: segmentation fault\n"
-			"Please submit a full bug report with --debug if appropriate.\n";
-		xwrite(err, msg, strlen(msg));
-		exit(signum);
-	} else if(signum == SIGINT || signum == SIGHUP) {
-		if(signum == SIGINT) {
-			msg = "\nInterrupt signal received\n";
-		} else {
-			msg = "\nHangup signal received\n";
-		}
-		xwrite(err, msg, strlen(msg));
-		if(alpm_trans_interrupt(config->handle) == 0) {
-			/* a transaction is being interrupted, don't exit pacman yet. */
-			return;
-		}
-	}
-	/* SIGINT: no committing transaction, release it now and then exit pacman
-	 * SIGHUP, SIGTERM: release no matter what */
-	alpm_trans_release(config->handle);
-	/* output a newline to be sure we clear any line we may be on */
-	xwrite(out, "\n", 1);
-	cleanup(128 + signum);
-}
-
 static void invalid_opt(int used, const char *opt1, const char *opt2)
 {
 	if(used) {
@@ -333,8 +307,7 @@ static void invalid_opt(int used, const char *opt1, const char *opt2)
 
 static int parsearg_util_addlist(alpm_list_t **list)
 {
-	char *i, *save;
-
+	char *i, *save = NULL;
 
 	for(i = strtok_r(optarg, ",", &save); i; i = strtok_r(NULL, ",", &save)) {
 		*list = alpm_list_add(*list, strdup(i));
@@ -355,6 +328,9 @@ static int parsearg_op(int opt, int dryrun)
 		case 'D':
 			if(dryrun) break;
 			config->op = (config->op != PM_OP_MAIN ? 0 : PM_OP_DATABASE); break;
+		case 'F':
+			if(dryrun) break;
+			config->op = (config->op != PM_OP_MAIN ? 0 : PM_OP_FILES); break;
 		case 'Q':
 			if(dryrun) break;
 			config->op = (config->op != PM_OP_MAIN ? 0 : PM_OP_QUERY); break;
@@ -444,12 +420,18 @@ static int parsearg_global(int opt)
 			free(config->gpgdir);
 			config->gpgdir = strdup(optarg);
 			break;
+		case OP_HOOKDIR:
+			config->hookdirs = alpm_list_add(config->hookdirs, strdup(optarg));
+			break;
 		case OP_LOGFILE:
 			free(config->logfile);
 			config->logfile = strndup(optarg, PATH_MAX);
 			break;
 		case OP_NOCONFIRM:
 			config->noconfirm = 1;
+			break;
+		case OP_CONFIRM:
+			config->noconfirm = 0;
 			break;
 		case OP_DBPATH:
 		case 'b':
@@ -474,9 +456,18 @@ static int parsearg_global(int opt)
 static int parsearg_database(int opt)
 {
 	switch(opt) {
-		case OP_ASDEPS: config->flags |= ALPM_TRANS_FLAG_ALLDEPS; break;
-		case OP_ASEXPLICIT: config->flags |= ALPM_TRANS_FLAG_ALLEXPLICIT; break;
-		default: return 1;
+		case OP_ASDEPS:
+			config->flags |= ALPM_TRANS_FLAG_ALLDEPS;
+			break;
+		case OP_ASEXPLICIT:
+			config->flags |= ALPM_TRANS_FLAG_ALLEXPLICIT;
+			break;
+		case OP_CHECK:
+		case 'k':
+			(config->op_q_check)++;
+			break;
+		default:
+			return 1;
 	}
 	return 0;
 }
@@ -486,6 +477,13 @@ static void checkargs_database(void)
 	invalid_opt(config->flags & ALPM_TRANS_FLAG_ALLDEPS
 			&& config->flags & ALPM_TRANS_FLAG_ALLEXPLICIT,
 			"--asdeps", "--asexplicit");
+
+	if(config->op_q_check) {
+		invalid_opt(config->flags & ALPM_TRANS_FLAG_ALLDEPS,
+				"--asdeps", "--check");
+		invalid_opt(config->flags & ALPM_TRANS_FLAG_ALLEXPLICIT,
+				"--asexplicit", "--check");
+	}
 }
 
 static int parsearg_query(int opt)
@@ -549,7 +547,8 @@ static int parsearg_query(int opt)
 			break;
 		case OP_UPGRADES:
 		case 'u':
-			config->op_q_upgrade = 1; break;
+			config->op_q_upgrade = 1;
+			break;
 		default:
 			return 1;
 	}
@@ -628,6 +627,9 @@ static int parsearg_trans(int opt)
 			free(config->print_format);
 			config->print_format = strdup(optarg);
 			break;
+		case OP_ASSUMEINSTALLED:
+			parsearg_util_addlist(&(config->assumeinstalled));
+			break;
 		default:
 			return 1;
 	}
@@ -693,10 +695,18 @@ static int parsearg_upgrade(int opt)
 		return 0;
 	}
 	switch(opt) {
-		case OP_FORCE: config->flags |= ALPM_TRANS_FLAG_FORCE; break;
-		case OP_ASDEPS: config->flags |= ALPM_TRANS_FLAG_ALLDEPS; break;
-		case OP_ASEXPLICIT: config->flags |= ALPM_TRANS_FLAG_ALLEXPLICIT; break;
-		case OP_NEEDED: config->flags |= ALPM_TRANS_FLAG_NEEDED; break;
+		case OP_FORCE:
+			config->flags |= ALPM_TRANS_FLAG_FORCE;
+			break;
+		case OP_ASDEPS:
+			config->flags |= ALPM_TRANS_FLAG_ALLDEPS;
+			break;
+		case OP_ASEXPLICIT:
+			config->flags |= ALPM_TRANS_FLAG_ALLEXPLICIT;
+			break;
+		case OP_NEEDED:
+			config->flags |= ALPM_TRANS_FLAG_NEEDED;
+			break;
 		case OP_IGNORE:
 			parsearg_util_addlist(&(config->ignorepkg));
 			break;
@@ -714,6 +724,57 @@ static void checkargs_upgrade(void)
 	invalid_opt(config->flags & ALPM_TRANS_FLAG_ALLDEPS
 			&& config->flags & ALPM_TRANS_FLAG_ALLEXPLICIT,
 			"--asdeps", "--asexplicit");
+}
+
+static int parsearg_files(int opt)
+{
+	if(parsearg_trans(opt) == 0) {
+		return 0;
+	}
+	switch(opt) {
+		case OP_OWNS:
+		case 'o':
+			config->op_q_owns = 1;
+			break;
+		case OP_LIST:
+		case 'l':
+			config->op_q_list = 1;
+			break;
+		case OP_SEARCH:
+		case 's':
+			config->op_s_search = 1;
+			break;
+		case OP_REFRESH:
+		case 'y':
+			(config->op_s_sync)++;
+			break;
+		case OP_REGEX:
+		case 'x':
+			config->op_f_regex = 1;
+			break;
+		case OP_MACHINEREADABLE:
+			config->op_f_machinereadable = 1;
+			break;
+		case OP_QUIET:
+		case 'q':
+			config->quiet = 1;
+			break;
+		default:
+			return 1;
+	}
+	return 0;
+}
+
+static void checkargs_files(void)
+{
+	if(config->op_q_owns) {
+		invalid_opt(config->op_q_list, "--owns", "--list");
+		invalid_opt(config->op_q_search, "--owns", "--search");
+		invalid_opt(config->op_f_regex, "--owns", "--regex");
+	} else if(config->op_q_list) {
+		invalid_opt(config->op_q_search, "--list", "--search");
+		invalid_opt(config->op_f_regex, "--list", "--regex");
+	}
 }
 
 static int parsearg_sync(int opt)
@@ -808,10 +869,11 @@ static int parseargs(int argc, char *argv[])
 	int opt;
 	int option_index = 0;
 	int result;
-	const char *optstring = "DQRSTUVb:cdefghiklmnopqr:stuvwy";
+	const char *optstring = "DFQRSTUVb:cdefghiklmnopqr:stuvwxy";
 	static const struct option opts[] =
 	{
 		{"database",   no_argument,       0, 'D'},
+		{"files",      no_argument,       0, 'F'},
 		{"query",      no_argument,       0, 'Q'},
 		{"remove",     no_argument,       0, 'R'},
 		{"sync",       no_argument,       0, 'S'},
@@ -841,6 +903,8 @@ static int parseargs(int argc, char *argv[])
 		{"root",       required_argument, 0, OP_ROOT},
 		{"recursive",  no_argument,       0, OP_RECURSIVE},
 		{"search",     no_argument,       0, OP_SEARCH},
+		{"regex",      no_argument,       0, OP_REGEX},
+		{"machinereadable",      no_argument,       0, OP_MACHINEREADABLE},
 		{"unrequired", no_argument,       0, OP_UNREQUIRED},
 		{"upgrades",   no_argument,       0, OP_UPGRADES},
 		{"sysupgrade", no_argument,       0, OP_SYSUPGRADE},
@@ -849,14 +913,17 @@ static int parseargs(int argc, char *argv[])
 		{"downloadonly", no_argument,     0, OP_DOWNLOADONLY},
 		{"refresh",    no_argument,       0, OP_REFRESH},
 		{"noconfirm",  no_argument,       0, OP_NOCONFIRM},
+		{"confirm",    no_argument,       0, OP_CONFIRM},
 		{"config",     required_argument, 0, OP_CONFIG},
 		{"ignore",     required_argument, 0, OP_IGNORE},
+		{"assume-installed",     required_argument, 0, OP_ASSUMEINSTALLED},
 		{"debug",      optional_argument, 0, OP_DEBUG},
 		{"force",      no_argument,       0, OP_FORCE},
 		{"noprogressbar", no_argument,    0, OP_NOPROGRESSBAR},
 		{"noscriptlet", no_argument,      0, OP_NOSCRIPTLET},
 		{"ask",        required_argument, 0, OP_ASK},
 		{"cachedir",   required_argument, 0, OP_CACHEDIR},
+		{"hookdir",    required_argument, 0, OP_HOOKDIR},
 		{"asdeps",     no_argument,       0, OP_ASDEPS},
 		{"logfile",    required_argument, 0, OP_LOGFILE},
 		{"ignoregroup", required_argument, 0, OP_IGNOREGROUP},
@@ -923,6 +990,9 @@ static int parseargs(int argc, char *argv[])
 			case PM_OP_UPGRADE:
 				result = parsearg_upgrade(opt);
 				break;
+			case PM_OP_FILES:
+				result = parsearg_files(opt);
+				break;
 			case PM_OP_DEPTEST:
 			default:
 				result = 1;
@@ -971,6 +1041,9 @@ static int parseargs(int argc, char *argv[])
 		case PM_OP_UPGRADE:
 			checkargs_upgrade();
 			break;
+		case PM_OP_FILES:
+			checkargs_files();
+			break;
 		default:
 			break;
 	}
@@ -1017,24 +1090,9 @@ int main(int argc, char *argv[])
 {
 	int ret = 0;
 	size_t i;
-	struct sigaction new_action, old_action;
-	const int signals[] = { SIGHUP, SIGINT, SIGTERM, SIGSEGV };
 	uid_t myuid = getuid();
 
-	/* Set signal handlers */
-	/* Set up the structure to specify the new action. */
-	new_action.sa_handler = handler;
-	sigemptyset(&new_action.sa_mask);
-	new_action.sa_flags = 0;
-
-	/* assign our handler to any signals we care about */
-	for(i = 0; i < sizeof(signals) / sizeof(signals[0]); i++) {
-		int signal = signals[i];
-		sigaction(signal, NULL, &old_action);
-		if(old_action.sa_handler != SIG_IGN) {
-			sigaction(signal, &new_action, NULL);
-		}
-	}
+	install_segv_handler();
 
 	/* i18n init */
 #if defined(ENABLE_NLS)
@@ -1045,11 +1103,19 @@ int main(int argc, char *argv[])
 	setuseragent();
 
 	/* init config data */
-	config = config_new();
+	if(!(config = config_new())) {
+		/* config_new prints the appropriate error message */
+		cleanup(1);
+	}
 
-	/* disable progressbar if the output is redirected */
+	install_soft_interrupt_handler();
+
 	if(!isatty(fileno(stdout))) {
+		/* disable progressbar if the output is redirected */
 		config->noprogressbar = 1;
+	} else {
+		/* install signal handler to update output width */
+		install_winch_handler();
 	}
 
 	/* Priority of options:
@@ -1080,9 +1146,9 @@ int main(int argc, char *argv[])
 			free(vdata);
 
 			i = 0;
-			while((c = fgetc(stdin)) != EOF) {
-				line[i] = (char)c;
-				if(isspace((unsigned char)line[i])) {
+			do {
+				c = fgetc(stdin);
+				if(c == EOF || isspace(c)) {
 					/* avoid adding zero length arg when multiple spaces separate args */
 					if(i > 0) {
 						line[i] = '\0';
@@ -1091,7 +1157,7 @@ int main(int argc, char *argv[])
 						i = 0;
 					}
 				} else {
-					i++;
+					line[i++] = (char)c;
 					/* we may be at the end of our allocated buffer now */
 					if(i >= current_size) {
 						char *new = realloc(line, current_size * 2);
@@ -1100,25 +1166,14 @@ int main(int argc, char *argv[])
 							current_size *= 2;
 						} else {
 							free(line);
-							line = NULL;
-							break;
+							pm_printf(ALPM_LOG_ERROR,
+									_("memory exhausted in argument parsing\n"));
+							cleanup(EXIT_FAILURE);
 						}
 					}
 				}
-			}
+			} while(c != EOF);
 
-			/* check for memory exhaustion */
-			if(!line) {
-				pm_printf(ALPM_LOG_ERROR, _("memory exhausted in argument parsing\n"));
-				cleanup(EXIT_FAILURE);
-			}
-
-			/* end of stream -- check for data still in line buffer */
-			if(i > 0) {
-				line[i] = '\0';
-				pm_targets = alpm_list_add(pm_targets, strdup(line));
-				target_found = 1;
-			}
 			free(line);
 			if(!freopen(ctermid(NULL), "r", stdin)) {
 				pm_printf(ALPM_LOG_ERROR, _("failed to reopen stdin for reading: (%s)\n"),
@@ -1174,6 +1229,11 @@ int main(int argc, char *argv[])
 			printf("%s  ", (const char *)j->data);
 		}
 		printf("\n");
+		printf("Hook Dirs : ");
+		for(j = alpm_option_get_hookdirs(config->handle); j; j = alpm_list_next(j)) {
+			printf("%s  ", (const char *)j->data);
+		}
+		printf("\n");
 		printf("Lock File : %s\n", alpm_option_get_lockfile(config->handle));
 		printf("Log File  : %s\n", alpm_option_get_logfile(config->handle));
 		printf("GPG Dir   : %s\n", alpm_option_get_gpgdir(config->handle));
@@ -1204,6 +1264,9 @@ int main(int argc, char *argv[])
 			break;
 		case PM_OP_DEPTEST:
 			ret = pacman_deptest(pm_targets);
+			break;
+		case PM_OP_FILES:
+			ret = pacman_files(pm_targets);
 			break;
 		default:
 			pm_printf(ALPM_LOG_ERROR, _("no operation specified (use -h for help)\n"));

@@ -1,7 +1,7 @@
 /*
  *  be_package.c : backend for packages
  *
- *  Copyright (c) 2006-2014 Pacman Development Team <pacman-dev@archlinux.org>
+ *  Copyright (c) 2006-2016 Pacman Development Team <pacman-dev@archlinux.org>
  *  Copyright (c) 2002-2006 by Judd Vinet <jvinet@zeroflux.org>
  *
  *  This program is free software; you can redistribute it and/or modify
@@ -24,6 +24,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
+#include <limits.h>
 
 /* libarchive */
 #include <archive.h>
@@ -193,9 +194,11 @@ static int parse_descfile(alpm_handle_t *handle, struct archive *a, alpm_pkg_t *
 				STRDUP(newpkg->name, ptr, return -1);
 				newpkg->name_hash = _alpm_hash_sdbm(newpkg->name);
 			} else if(strcmp(key, "pkgbase") == 0) {
-				/* not used atm */
+				STRDUP(newpkg->base, ptr, return -1);
 			} else if(strcmp(key, "pkgver") == 0) {
 				STRDUP(newpkg->version, ptr, return -1);
+			} else if(strcmp(key, "basever") == 0) {
+				/* not used atm */
 			} else if(strcmp(key, "pkgdesc") == 0) {
 				STRDUP(newpkg->desc, ptr, return -1);
 			} else if(strcmp(key, "group") == 0) {
@@ -214,28 +217,28 @@ static int parse_descfile(alpm_handle_t *handle, struct archive *a, alpm_pkg_t *
 				/* size in the raw package is uncompressed (installed) size */
 				newpkg->isize = _alpm_strtoofft(ptr);
 			} else if(strcmp(key, "depend") == 0) {
-				alpm_depend_t *dep = _alpm_splitdep(ptr);
+				alpm_depend_t *dep = alpm_dep_from_string(ptr);
 				newpkg->depends = alpm_list_add(newpkg->depends, dep);
 			} else if(strcmp(key, "optdepend") == 0) {
-				alpm_depend_t *optdep = _alpm_splitdep(ptr);
+				alpm_depend_t *optdep = alpm_dep_from_string(ptr);
 				newpkg->optdepends = alpm_list_add(newpkg->optdepends, optdep);
 			} else if(strcmp(key, "makedepend") == 0) {
 				/* not used atm */
 			} else if(strcmp(key, "checkdepend") == 0) {
 				/* not used atm */
 			} else if(strcmp(key, "conflict") == 0) {
-				alpm_depend_t *conflict = _alpm_splitdep(ptr);
+				alpm_depend_t *conflict = alpm_dep_from_string(ptr);
 				newpkg->conflicts = alpm_list_add(newpkg->conflicts, conflict);
 			} else if(strcmp(key, "replaces") == 0) {
-				alpm_depend_t *replace = _alpm_splitdep(ptr);
+				alpm_depend_t *replace = alpm_dep_from_string(ptr);
 				newpkg->replaces = alpm_list_add(newpkg->replaces, replace);
 			} else if(strcmp(key, "provides") == 0) {
-				alpm_depend_t *provide = _alpm_splitdep(ptr);
+				alpm_depend_t *provide = alpm_dep_from_string(ptr);
 				newpkg->provides = alpm_list_add(newpkg->provides, provide);
 			} else if(strcmp(key, "backup") == 0) {
 				alpm_backup_t *backup;
 				CALLOC(backup, 1, sizeof(alpm_backup_t), return -1);
-				STRDUP(backup->name, ptr, return -1);
+				STRDUP(backup->name, ptr, FREE(backup); return -1);
 				newpkg->backup = alpm_list_add(newpkg->backup, backup);
 			} else if(strcmp(key, "force") == 0) {
 				/* deprecated, skip it */
@@ -354,7 +357,7 @@ int _alpm_pkg_validate_internal(alpm_handle_t *handle,
 }
 
 /**
- * Handle the existance of simple paths for _alpm_load_pkg_internal()
+ * Handle the existence of simple paths for _alpm_load_pkg_internal()
  * @param pkg package to change
  * @param path path to examine
  * @return 0 if path doesn't match any rule, 1 if it has been handled
@@ -382,15 +385,16 @@ static int handle_simple_path(alpm_pkg_t *pkg, const char *path)
  * @param path path of the file to be added
  * @return <0 on error, 0 on success
  */
-static int add_entry_to_files_list(alpm_pkg_t *pkg, size_t *files_size,
-		struct archive_entry *entry, const char *path)
+static int add_entry_to_files_list(alpm_filelist_t *filelist,
+		size_t *files_size, struct archive_entry *entry, const char *path)
 {
-	const size_t files_count = pkg->files.count;
+	const size_t files_count = filelist->count;
 	alpm_file_t *current_file;
 	mode_t type;
 	size_t pathlen;
 
-	if(!_alpm_greedy_grow((void **)&pkg->files.files, files_size, (files_count + 1) * sizeof(alpm_file_t))) {
+	if(!_alpm_greedy_grow((void **)&filelist->files,
+				files_size, (files_count + 1) * sizeof(alpm_file_t))) {
 		return -1;
 	}
 
@@ -398,7 +402,7 @@ static int add_entry_to_files_list(alpm_pkg_t *pkg, size_t *files_size,
 
 	pathlen = strlen(path);
 
-	current_file = pkg->files.files + files_count;
+	current_file = filelist->files + files_count;
 
 	/* mtree paths don't contain a tailing slash, those we get from
 	 * the archive directly do (expensive way)
@@ -416,7 +420,7 @@ static int add_entry_to_files_list(alpm_pkg_t *pkg, size_t *files_size,
 	}
 	current_file->size = archive_entry_size(entry);
 	current_file->mode = archive_entry_mode(entry);
-	pkg->files.count++;
+	filelist->count++;
 	return 0;
 }
 
@@ -435,23 +439,19 @@ static int add_entry_to_files_list(alpm_pkg_t *pkg, size_t *files_size,
 static int build_filelist_from_mtree(alpm_handle_t *handle, alpm_pkg_t *pkg, struct archive *archive)
 {
 	int ret = 0;
+	size_t i;
 	size_t mtree_maxsize = 0;
 	size_t mtree_cursize = 0;
 	size_t files_size = 0; /* we clean up the existing array so this is fine */
 	char *mtree_data = NULL;
 	struct archive *mtree;
 	struct archive_entry *mtree_entry = NULL;
+	alpm_filelist_t filelist;
 
 	_alpm_log(handle, ALPM_LOG_DEBUG,
 			"found mtree for package %s, getting file list\n", pkg->filename);
 
-	/* throw away any files we might have already found */
-	for (size_t i = 0; i < pkg->files.count; i++) {
-		free(pkg->files.files[i].name);
-	}
-	free(pkg->files.files);
-	pkg->files.files = NULL;
-	pkg->files.count = 0;
+	memset(&filelist, 0, sizeof(alpm_filelist_t));
 
 	/* create a new archive to parse the mtree and load it from archive into memory */
 	/* TODO: split this into a function */
@@ -474,7 +474,7 @@ static int build_filelist_from_mtree(alpm_handle_t *handle, alpm_pkg_t *pkg, str
 		size = archive_read_data(archive, mtree_data + mtree_cursize, ALPM_BUFFER_SIZE);
 
 		if(size < 0) {
-			_alpm_log(handle, ALPM_LOG_ERROR, _("error while reading package %s: %s\n"),
+			_alpm_log(handle, ALPM_LOG_DEBUG, _("error while reading package %s: %s\n"),
 					pkg->filename, archive_error_string(archive));
 			handle->pm_errno = ALPM_ERR_LIBARCHIVE;
 			goto error;
@@ -487,7 +487,7 @@ static int build_filelist_from_mtree(alpm_handle_t *handle, alpm_pkg_t *pkg, str
 	}
 
 	if(archive_read_open_memory(mtree, mtree_data, mtree_cursize)) {
-		_alpm_log(handle, ALPM_LOG_ERROR,
+		_alpm_log(handle, ALPM_LOG_DEBUG,
 				_("error while reading mtree of package %s: %s\n"),
 				pkg->filename, archive_error_string(mtree));
 		handle->pm_errno = ALPM_ERR_LIBARCHIVE;
@@ -506,23 +506,38 @@ static int build_filelist_from_mtree(alpm_handle_t *handle, alpm_pkg_t *pkg, str
 			continue;
 		}
 
-		if(add_entry_to_files_list(pkg, &files_size, mtree_entry, path) < 0) {
+		if(add_entry_to_files_list(&filelist, &files_size, mtree_entry, path) < 0) {
 			goto error;
 		}
 	}
 
 	if(ret != ARCHIVE_EOF && ret != ARCHIVE_OK) { /* An error occurred */
-		_alpm_log(handle, ALPM_LOG_ERROR, _("error while reading mtree of package %s: %s\n"),
+		_alpm_log(handle, ALPM_LOG_DEBUG, _("error while reading mtree of package %s: %s\n"),
 				pkg->filename, archive_error_string(mtree));
 		handle->pm_errno = ALPM_ERR_LIBARCHIVE;
 		goto error;
 	}
+
+	/* throw away any files we loaded directly from the archive */
+	for(i = 0; i < pkg->files.count; i++) {
+		free(pkg->files.files[i].name);
+	}
+	free(pkg->files.files);
+
+	/* copy over new filelist */
+	memcpy(&pkg->files, &filelist, sizeof(alpm_filelist_t));
 
 	free(mtree_data);
 	_alpm_archive_read_free(mtree);
 	_alpm_log(handle, ALPM_LOG_DEBUG, "finished mtree reading for %s\n", pkg->filename);
 	return 0;
 error:
+	/* throw away any files we loaded from the mtree */
+	for(i = 0; i < filelist.count; i++) {
+		free(filelist.files[i].name);
+	}
+	free(filelist.files);
+
 	free(mtree_data);
 	_alpm_archive_read_free(mtree);
 	return -1;
@@ -538,7 +553,9 @@ error:
 alpm_pkg_t *_alpm_pkg_load_internal(alpm_handle_t *handle,
 		const char *pkgfile, int full)
 {
-	int ret, fd, config, hit_mtree = 0;
+	int ret, fd;
+	int config = 0;
+	int hit_mtree = 0;
 	struct archive *archive;
 	struct archive_entry *entry;
 	alpm_pkg_t *newpkg;
@@ -603,16 +620,13 @@ alpm_pkg_t *_alpm_pkg_load_internal(alpm_handle_t *handle,
 			/* building the file list: cheap way
 			 * get the filelist from the mtree file rather than scanning
 			 * the whole archive  */
-			if(build_filelist_from_mtree(handle, newpkg, archive) < 0) {
-				goto error;
-			}
-			hit_mtree = 1;
+			hit_mtree = build_filelist_from_mtree(handle, newpkg, archive) == 0;
 			continue;
 		} else if(handle_simple_path(newpkg, entry_name)) {
 			continue;
 		} else if(full && !hit_mtree) {
 			/* building the file list: expensive way */
-			if(add_entry_to_files_list(newpkg, &files_size, entry, entry_name) < 0) {
+			if(add_entry_to_files_list(&newpkg->files, &files_size, entry, entry_name) < 0) {
 				goto error;
 			}
 		}
@@ -682,21 +696,24 @@ error:
 	return NULL;
 }
 
+/* adopted limit from repo-add */
+#define MAX_SIGFILE_SIZE 16384
+
 static int read_sigfile(const char *sigpath, unsigned char **sig)
 {
 	struct stat st;
 	FILE *fp;
 
-	if(stat(sigpath, &st) != 0) {
-		return -1;
-	}
-
-	MALLOC(*sig, st.st_size, return -1);
-
 	if((fp = fopen(sigpath, "rb")) == NULL) {
-		free(*sig);
 		return -1;
 	}
+
+	if(fstat(fileno(fp), &st) != 0 || st.st_size > MAX_SIGFILE_SIZE) {
+		fclose(fp);
+		return -1;
+	}
+
+	MALLOC(*sig, st.st_size, fclose(fp); return -1);
 
 	if(fread(*sig, st.st_size, 1, fp) != 1) {
 		free(*sig);
@@ -749,6 +766,7 @@ int SYMEXPORT alpm_pkg_load(alpm_handle_t *handle, const char *filename, int ful
 
 			if(fail) {
 				_alpm_log(handle, ALPM_LOG_ERROR, _("required key missing from keyring\n"));
+				free(sigpath);
 				return -1;
 			}
 		}

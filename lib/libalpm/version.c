@@ -1,5 +1,5 @@
 /*
- *  Copyright (c) 2006-2014 Pacman Development Team <pacman-dev@archlinux.org>
+ *  Copyright (c) 2006-2016 Pacman Development Team <pacman-dev@archlinux.org>
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
@@ -109,7 +109,8 @@ static int rpmvercmp(const char *a, const char *b)
 
 		/* If the separator lengths were different, we are also finished */
 		if ((one - ptr1) != (two - ptr2)) {
-			return (one - ptr1) < (two - ptr2) ? -1 : 1;
+			ret = (one - ptr1) < (two - ptr2) ? -1 : 1;
+			goto cleanup;
 		}
 
 		ptr1 = one;

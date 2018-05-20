@@ -1,7 +1,7 @@
 /*
  *  backup.c
  *
- *  Copyright (c) 2006-2014 Pacman Development Team <pacman-dev@archlinux.org>
+ *  Copyright (c) 2006-2016 Pacman Development Team <pacman-dev@archlinux.org>
  *  Copyright (c) 2005 by Judd Vinet <jvinet@zeroflux.org>
  *  Copyright (c) 2005 by Aurelien Foret <orelien@chez.com>
  *  Copyright (c) 2005 by Christian Hamar <krics@linuxforum.hu>
@@ -47,8 +47,8 @@ int _alpm_split_backup(const char *string, alpm_backup_t **backup)
 	*ptr = '\0';
 	ptr++;
 	/* now str points to the filename and ptr points to the hash */
-	STRDUP((*backup)->name, str, return -1);
-	STRDUP((*backup)->hash, ptr, return -1);
+	STRDUP((*backup)->name, str, FREE(str); return -1);
+	STRDUP((*backup)->hash, ptr, FREE((*backup)->name); FREE(str); return -1);
 	FREE(str);
 	return 0;
 }
@@ -77,9 +77,10 @@ alpm_backup_t *_alpm_needbackup(const char *file, alpm_pkg_t *pkg)
 
 void _alpm_backup_free(alpm_backup_t *backup)
 {
-	free(backup->name);
-	free(backup->hash);
-	free(backup);
+	ASSERT(backup != NULL, return);
+	FREE(backup->name);
+	FREE(backup->hash);
+	FREE(backup);
 }
 
 alpm_backup_t *_alpm_backup_dup(const alpm_backup_t *backup)
@@ -87,10 +88,15 @@ alpm_backup_t *_alpm_backup_dup(const alpm_backup_t *backup)
 	alpm_backup_t *newbackup;
 	CALLOC(newbackup, 1, sizeof(alpm_backup_t), return NULL);
 
-	STRDUP(newbackup->name, backup->name, return NULL);
-	STRDUP(newbackup->hash, backup->hash, return NULL);
+	STRDUP(newbackup->name, backup->name, goto error);
+	STRDUP(newbackup->hash, backup->hash, goto error);
 
 	return newbackup;
+
+error:
+	free(newbackup->name);
+	free(newbackup);
+	return NULL;
 }
 
 /* vim: set noet: */

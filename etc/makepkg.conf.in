@@ -8,9 +8,9 @@
 #
 #-- The download utilities that makepkg should use to acquire sources
 #  Format: 'protocol::agent'
-DLAGENTS=('ftp::/usr/bin/curl -qfC - --ftp-pasv --retry 3 --retry-delay 3 -o %o %u'
-          'http::/usr/bin/curl -qb "" -fLC - --retry 3 --retry-delay 3 -o %o %u'
-          'https::/usr/bin/curl -qb "" -fLC - --retry 3 --retry-delay 3 -o %o %u'
+DLAGENTS=('ftp::/usr/bin/curl -gqfC - --ftp-pasv --retry 3 --retry-delay 3 -o %o %u'
+          'http::/usr/bin/curl -gqb "" -fLC - --retry 3 --retry-delay 3 -o %o %u'
+          'https::/usr/bin/curl -gqb "" -fLC - --retry 3 --retry-delay 3 -o %o %u'
           'rsync::/usr/bin/rsync --no-motd -z %u %o'
           'scp::/usr/bin/scp -C %u %o')
 
@@ -18,6 +18,13 @@ DLAGENTS=('ftp::/usr/bin/curl -qfC - --ftp-pasv --retry 3 --retry-delay 3 -o %o 
 # /usr/bin/snarf
 # /usr/bin/lftpget -c
 # /usr/bin/wget
+
+#-- The package required by makepkg to download VCS sources
+#  Format: 'protocol::package'
+VCSCLIENTS=('bzr::bzr'
+            'git::git'
+            'hg::mercurial'
+            'svn::subversion')
 
 #########################################################################
 # ARCHITECTURE, COMPILE FLAGS
@@ -64,7 +71,7 @@ BUILDENV=(!distcc color !ccache check !sign)
 #   These are default values for the options=() settings
 #########################################################################
 #
-# Default: OPTIONS=(strip docs libtool staticlibs emptydirs zipman purge !upx !debug)
+# Default: OPTIONS=(strip docs libtool staticlibs emptydirs zipman purge !upx !optipng !debug)
 #  A negated option will do the opposite of the comments below.
 #
 #-- strip:      Strip symbols from binaries/libraries
@@ -75,9 +82,10 @@ BUILDENV=(!distcc color !ccache check !sign)
 #-- zipman:     Compress manual (man and info) pages in MAN_DIRS with gzip
 #-- purge:      Remove files specified by PURGE_TARGETS
 #-- upx:        Compress binary executable files using UPX
+#-- optipng:    Optimize PNG images with optipng
 #-- debug:      Add debugging flags as specified in DEBUG_* variables
 #
-OPTIONS=(strip docs libtool staticlibs emptydirs zipman purge !upx !debug)
+OPTIONS=(strip docs libtool staticlibs emptydirs zipman purge !upx !optipng !debug)
 
 #-- File integrity checks to use. Valid: md5, sha1, sha256, sha384, sha512
 INTEGRITY_CHECK=(md5)

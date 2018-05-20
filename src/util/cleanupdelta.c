@@ -1,7 +1,7 @@
 /*
  *  cleanupdelta.c : return list of unused delta in a given sync database
  *
- *  Copyright (c) 2011-2014 Pacman Development Team <pacman-dev@archlinux.org>
+ *  Copyright (c) 2011-2016 Pacman Development Team <pacman-dev@archlinux.org>
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
@@ -35,19 +35,17 @@ static void cleanup(int signum)
 	exit(signum);
 }
 
-static void output_cb(alpm_event_log_t *event)
+__attribute__((format(printf, 2, 0)))
+static void output_cb(alpm_loglevel_t level, const char *fmt, va_list args)
 {
-	if(event->type != ALPM_EVENT_LOG) {
-		return;
-	}
-	if(strlen(event->fmt)) {
-		switch(event->level) {
+	if(strlen(fmt)) {
+		switch(level) {
 			case ALPM_LOG_ERROR: printf("error: "); break;
 			case ALPM_LOG_WARNING: printf("warning: "); break;
 			/* case ALPM_LOG_DEBUG: printf("debug: "); break; */
 			default: return;
 		}
-		vprintf(event->fmt, event->args);
+		vprintf(fmt, args);
 	}
 }
 
@@ -128,7 +126,7 @@ int main(int argc, char *argv[])
 	}
 
 	/* let us get log messages from libalpm */
-	alpm_option_set_eventcb(handle, (alpm_cb_event) output_cb);
+	alpm_option_set_logcb(handle, output_cb);
 
 	checkdbs(dbnames);
 	alpm_list_free(dbnames);

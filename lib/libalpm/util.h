@@ -1,7 +1,7 @@
 /*
  *  util.h
  *
- *  Copyright (c) 2006-2014 Pacman Development Team <pacman-dev@archlinux.org>
+ *  Copyright (c) 2006-2016 Pacman Development Team <pacman-dev@archlinux.org>
  *  Copyright (c) 2002-2006 by Judd Vinet <jvinet@zeroflux.org>
  *  Copyright (c) 2005 by Aurelien Foret <orelien@chez.com>
  *  Copyright (c) 2005 by Christian Hamar <krics@linuxforum.hu>
@@ -21,8 +21,8 @@
  *  You should have received a copy of the GNU General Public License
  *  along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
-#ifndef _ALPM_UTIL_H
-#define _ALPM_UTIL_H
+#ifndef ALPM_UTIL_H
+#define ALPM_UTIL_H
 
 #include "alpm_list.h"
 #include "alpm.h"
@@ -35,7 +35,6 @@
 #include <stdarg.h>
 #include <stddef.h> /* size_t */
 #include <sys/types.h>
-#include <sys/stat.h> /* struct stat */
 #include <math.h> /* fabs */
 #include <float.h> /* DBL_EPSILON */
 #include <fcntl.h> /* open, close */
@@ -69,6 +68,10 @@ void _alpm_alloc_fail(size_t size);
 
 #define RET_ERR(handle, err, ret) do { \
 	_alpm_log(handle, ALPM_LOG_DEBUG, "returning error %d from %s : %s\n", err, __func__, alpm_strerror(err)); \
+	(handle)->pm_errno = (err); \
+	return (ret); } while(0)
+
+#define RET_ERR_ASYNC_SAFE(handle, err, ret) do { \
 	(handle)->pm_errno = (err); \
 	return (ret); } while(0)
 
@@ -120,15 +123,14 @@ int _alpm_unpack(alpm_handle_t *handle, const char *archive, const char *prefix,
 
 ssize_t _alpm_files_in_directory(alpm_handle_t *handle, const char *path, int full_count);
 
-int _alpm_logaction(alpm_handle_t *handle, const char *prefix, const char *fmt, va_list args)
-	__attribute__((format(printf, 3, 0)));
+typedef ssize_t (*_alpm_cb_io)(void *buf, ssize_t len, void *ctx);
 
-int _alpm_run_chroot(alpm_handle_t *handle, const char *cmd, char *const argv[]);
+int _alpm_run_chroot(alpm_handle_t *handle, const char *cmd, char *const argv[],
+		_alpm_cb_io in_cb, void *in_ctx);
 int _alpm_ldconfig(alpm_handle_t *handle);
 int _alpm_str_cmp(const void *s1, const void *s2);
 char *_alpm_filecache_find(alpm_handle_t *handle, const char *filename);
 const char *_alpm_filecache_setup(alpm_handle_t *handle);
-int _alpm_lstat(const char *path, struct stat *buf);
 int _alpm_test_checksum(const char *filepath, const char *expected, alpm_pkgvalidation_t type);
 int _alpm_archive_fgets(struct archive *a, struct archive_read_buffer *b);
 int _alpm_splitname(const char *target, char **name, char **version,
@@ -154,6 +156,6 @@ char *strsep(char **, const char *);
 
 #define UNUSED __attribute__((unused))
 
-#endif /* _ALPM_UTIL_H */
+#endif /* ALPM_UTIL_H */
 
 /* vim: set noet: */

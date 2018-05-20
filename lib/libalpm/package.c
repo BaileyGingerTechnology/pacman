@@ -1,7 +1,7 @@
 /*
  *  package.c
  *
- *  Copyright (c) 2006-2014 Pacman Development Team <pacman-dev@archlinux.org>
+ *  Copyright (c) 2006-2016 Pacman Development Team <pacman-dev@archlinux.org>
  *  Copyright (c) 2002-2006 by Judd Vinet <jvinet@zeroflux.org>
  *  Copyright (c) 2005 by Aurelien Foret <orelien@chez.com>
  *  Copyright (c) 2005, 2006 by Christian Hamar <krics@linuxforum.hu>
@@ -83,6 +83,7 @@ int SYMEXPORT alpm_pkg_checkmd5sum(alpm_pkg_t *pkg)
  * backend logic that needs lazy access, such as the local database through
  * a lazy-load cache. However, the defaults will work just fine for fully-
  * populated package structures. */
+static const char *_pkg_get_base(alpm_pkg_t *pkg)        { return pkg->base; }
 static const char *_pkg_get_desc(alpm_pkg_t *pkg)        { return pkg->desc; }
 static const char *_pkg_get_url(alpm_pkg_t *pkg)         { return pkg->url; }
 static alpm_time_t _pkg_get_builddate(alpm_pkg_t *pkg)   { return pkg->builddate; }
@@ -144,6 +145,7 @@ static int _pkg_force_load(alpm_pkg_t UNUSED *pkg) { return 0; }
  * struct itself with no abstraction layer or any type of lazy loading.
  */
 struct pkg_operations default_pkg_ops = {
+	.get_base        = _pkg_get_base,
 	.get_desc        = _pkg_get_desc,
 	.get_url         = _pkg_get_url,
 	.get_builddate   = _pkg_get_builddate,
@@ -184,6 +186,13 @@ const char SYMEXPORT *alpm_pkg_get_filename(alpm_pkg_t *pkg)
 	ASSERT(pkg != NULL, return NULL);
 	pkg->handle->pm_errno = 0;
 	return pkg->filename;
+}
+
+const char SYMEXPORT *alpm_pkg_get_base(alpm_pkg_t *pkg)
+{
+	ASSERT(pkg != NULL, return NULL);
+	pkg->handle->pm_errno = 0;
+	return pkg->ops->get_base(pkg);
 }
 
 const char SYMEXPORT *alpm_pkg_get_name(alpm_pkg_t *pkg)
@@ -566,6 +575,7 @@ int _alpm_pkg_dup(alpm_pkg_t *pkg, alpm_pkg_t **new_ptr)
 
 	newpkg->name_hash = pkg->name_hash;
 	STRDUP(newpkg->filename, pkg->filename, goto cleanup);
+	STRDUP(newpkg->base, pkg->base, goto cleanup);
 	STRDUP(newpkg->name, pkg->name, goto cleanup);
 	STRDUP(newpkg->version, pkg->version, goto cleanup);
 	STRDUP(newpkg->desc, pkg->desc, goto cleanup);
@@ -574,7 +584,7 @@ int _alpm_pkg_dup(alpm_pkg_t *pkg, alpm_pkg_t **new_ptr)
 	newpkg->installdate = pkg->installdate;
 	STRDUP(newpkg->packager, pkg->packager, goto cleanup);
 	STRDUP(newpkg->md5sum, pkg->md5sum, goto cleanup);
-	STRDUP(newpkg->sha256sum, pkg->md5sum, goto cleanup);
+	STRDUP(newpkg->sha256sum, pkg->sha256sum, goto cleanup);
 	STRDUP(newpkg->arch, pkg->arch, goto cleanup);
 	newpkg->size = pkg->size;
 	newpkg->isize = pkg->isize;
@@ -613,7 +623,7 @@ int _alpm_pkg_dup(alpm_pkg_t *pkg, alpm_pkg_t **new_ptr)
 	newpkg->infolevel = pkg->infolevel;
 	newpkg->origin = pkg->origin;
 	if(newpkg->origin == ALPM_PKG_FROM_FILE) {
-		newpkg->origin_data.file = strdup(pkg->origin_data.file);
+		STRDUP(newpkg->origin_data.file, pkg->origin_data.file, goto cleanup);
 	} else {
 		newpkg->origin_data.db = pkg->origin_data.db;
 	}
@@ -630,7 +640,7 @@ cleanup:
 
 static void free_deplist(alpm_list_t *deps)
 {
-	alpm_list_free_inner(deps, (alpm_list_fn_free)_alpm_dep_free);
+	alpm_list_free_inner(deps, (alpm_list_fn_free)alpm_dep_free);
 	alpm_list_free(deps);
 }
 
@@ -641,6 +651,7 @@ void _alpm_pkg_free(alpm_pkg_t *pkg)
 	}
 
 	FREE(pkg->filename);
+	FREE(pkg->base);
 	FREE(pkg->name);
 	FREE(pkg->version);
 	FREE(pkg->desc);
@@ -671,6 +682,7 @@ void _alpm_pkg_free(alpm_pkg_t *pkg)
 	alpm_list_free(pkg->deltas);
 	alpm_list_free(pkg->delta_path);
 	alpm_list_free(pkg->removes);
+	_alpm_pkg_free(pkg->oldpkg);
 
 	if(pkg->origin == ALPM_PKG_FROM_FILE) {
 		FREE(pkg->origin_data.file);
@@ -696,6 +708,8 @@ void _alpm_pkg_free_trans(alpm_pkg_t *pkg)
 
 	alpm_list_free(pkg->removes);
 	pkg->removes = NULL;
+	_alpm_pkg_free(pkg->oldpkg);
+	pkg->oldpkg = NULL;
 }
 
 /* Is spkg an upgrade for localpkg? */

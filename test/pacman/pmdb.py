@@ -1,5 +1,5 @@
 #  Copyright (c) 2006 by Aurelien Foret <orelien@chez.com>
-#  Copyright (c) 2006-2014 Pacman Development Team <pacman-dev@archlinux.org>
+#  Copyright (c) 2006-2016 Pacman Development Team <pacman-dev@archlinux.org>
 #
 #  This program is free software; you can redistribute it and/or modify
 #  it under the terms of the GNU General Public License as published by
@@ -69,7 +69,7 @@ class pmdb(object):
         return "%s" % self.treename
 
     def getverify(self):
-        for value in ("Always", "Never", "Optional"):
+        for value in ("Required", "Never", "Optional"):
             if value in self.treename:
                 return value
         return "Never"
@@ -87,6 +87,8 @@ class pmdb(object):
         if self.read_dircache is None:
             self.read_dircache = os.listdir(self.dbdir)
         for entry in self.read_dircache:
+            if entry == "ALPM_DB_VERSION":
+                continue
             [pkgname, pkgver, pkgrel] = entry.rsplit("-", 2)
             if pkgname == name:
                 dbentry = entry
@@ -170,7 +172,7 @@ class pmdb(object):
             if line == "%FILES%":
                 while line:
                     line = fd.readline().strip("\n")
-                    if line and line[-1] != "/":
+                    if line:
                         pkg.files.append(line)
             if line == "%BACKUP%":
                 pkg.backup = _getsection(fd)

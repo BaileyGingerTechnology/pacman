@@ -1,7 +1,7 @@
 /*
  *  conf.h
  *
- *  Copyright (c) 2006-2014 Pacman Development Team <pacman-dev@archlinux.org>
+ *  Copyright (c) 2006-2016 Pacman Development Team <pacman-dev@archlinux.org>
  *  Copyright (c) 2002-2006 by Judd Vinet <jvinet@zeroflux.org>
  *
  *  This program is free software; you can redistribute it and/or modify
@@ -17,8 +17,8 @@
  *  You should have received a copy of the GNU General Public License
  *  along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
-#ifndef _PM_CONF_H
-#define _PM_CONF_H
+#ifndef PM_CONF_H
+#define PM_CONF_H
 
 #include <alpm.h>
 
@@ -33,6 +33,14 @@ typedef struct __colstr_t {
 	const char *err;
 	const char *nocolor;
 } colstr_t;
+
+typedef struct __config_repo_t {
+	char *name;
+	alpm_list_t *servers;
+	alpm_db_usage_t usage;
+	alpm_siglevel_t siglevel;
+	alpm_siglevel_t siglevel_mask;
+} config_repo_t;
 
 typedef struct __config_t {
 	unsigned short op;
@@ -58,6 +66,7 @@ typedef struct __config_t {
 	char *dbpath;
 	char *logfile;
 	char *gpgdir;
+	alpm_list_t *hookdirs;
 	alpm_list_t *cachedirs;
 
 	unsigned short op_q_isfile;
@@ -80,6 +89,9 @@ typedef struct __config_t {
 	unsigned short op_s_search;
 	unsigned short op_s_upgrade;
 
+	unsigned short op_f_regex;
+	unsigned short op_f_machinereadable;
+
 	unsigned short group;
 	unsigned short noask;
 	unsigned int ask;
@@ -87,6 +99,10 @@ typedef struct __config_t {
 	alpm_siglevel_t siglevel;
 	alpm_siglevel_t localfilesiglevel;
 	alpm_siglevel_t remotefilesiglevel;
+
+	alpm_siglevel_t siglevel_mask;
+	alpm_siglevel_t localfilesiglevel_mask;
+	alpm_siglevel_t remotefilesiglevel_mask;
 
 	/* conf file options */
 	/* I Love Candy! */
@@ -101,6 +117,7 @@ typedef struct __config_t {
 	alpm_list_t *holdpkg;
 	alpm_list_t *ignorepkg;
 	alpm_list_t *ignoregrp;
+	alpm_list_t *assumeinstalled;
 	alpm_list_t *noupgrade;
 	alpm_list_t *noextract;
 	char *xfercommand;
@@ -113,6 +130,8 @@ typedef struct __config_t {
 
 	/* Color strings for output */
 	colstr_t colstr;
+
+	alpm_list_t *repos;
 } config_t;
 
 /* Operations */
@@ -123,13 +142,15 @@ enum {
 	PM_OP_QUERY,
 	PM_OP_SYNC,
 	PM_OP_DEPTEST,
-	PM_OP_DATABASE
+	PM_OP_DATABASE,
+	PM_OP_FILES
 };
 
 /* Long Operations */
 enum {
 	OP_LONG_FLAG_MIN = 1000,
 	OP_NOCONFIRM,
+	OP_CONFIRM,
 	OP_CONFIG,
 	OP_IGNORE,
 	OP_DEBUG,
@@ -137,6 +158,7 @@ enum {
 	OP_NOSCRIPTLET,
 	OP_ASK,
 	OP_CACHEDIR,
+	OP_HOOKDIR,
 	OP_ASDEPS,
 	OP_LOGFILE,
 	OP_IGNOREGROUP,
@@ -170,13 +192,16 @@ enum {
 	OP_ROOT,
 	OP_RECURSIVE,
 	OP_SEARCH,
+	OP_REGEX,
+	OP_MACHINEREADABLE,
 	OP_UNREQUIRED,
 	OP_UPGRADES,
 	OP_SYSUPGRADE,
 	OP_UNNEEDED,
 	OP_VERBOSE,
 	OP_DOWNLOADONLY,
-	OP_REFRESH
+	OP_REFRESH,
+	OP_ASSUMEINSTALLED
 };
 
 /* clean method */
@@ -205,8 +230,10 @@ void enable_colors(int colors);
 config_t *config_new(void);
 int config_free(config_t *oldconfig);
 
+void config_repo_free(config_repo_t *repo);
+
 int config_set_arch(const char *arch);
 int parseconfig(const char *file);
-#endif /* _PM_CONF_H */
+#endif /* PM_CONF_H */
 
 /* vim: set noet: */

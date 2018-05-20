@@ -16,7 +16,6 @@ Synopsis
 
 Description
 -----------
-
 'makepkg-template' is a script to ease the work of maintaining multiple similar
 PKGBUILDs.  It allows you to move most of the code from the PKGBUILD into a
 template file and uses markers to allow in-place updating of existing PKGBUILDs
@@ -36,7 +35,7 @@ and
 	# template end;
 
 Currently used keys are: name (mandatory) and version. Template names are limited to
-alphanumerics, "@", "+", ".", "-" and "_". Versions are limited to numbers and ".".
+alphanumerics, "@", "+", ".", "-", and "_". Versions are limited to numbers and ".".
 
 For initial creation there is a one line short cut which does not need an end marker:
 
@@ -48,8 +47,8 @@ and end markers and the template code on the first run.
 Template files should be stored in one directory and filenames should be
 "$template_name-$version.template" with a symlink "$template_name.template"
 pointing to the most recent template. If the version is not set in the marker,
-'makepkg-template' will automatically use the most recent version of the
-template, otherwise the specified version will be used.  This allows for easier
+'makepkg-template' will automatically use the target of "$template_name.template",
+otherwise the specified version will be used.  This allows for easier
 verification of untrusted PKGBUILDs if the template is trusted. You verify the
 non-template code and then use a command similar to this:
 
@@ -60,9 +59,9 @@ resulting PKGBUILD. If you use markers in a template, please set the version
 you used/tested with in the start/input marker so other people can properly
 recreate from templates.
 
+
 Options
 -------
-
 *-p, \--input* <build script>::
 	Read the package script `build script` instead of the default.
 
@@ -73,7 +72,10 @@ Options
 	Always use the newest available template file.
 
 *\--template-dir* <dir>::
-	Change the dir where we are looking for template files.
+	Change the dir where we are looking for template files. This option may be
+	given multiple times in which case files found in directory given last will
+	take precedence.
+
 
 Example PKGBUILD
 ----------------
@@ -110,7 +112,6 @@ Example PKGBUILD
 		make DESTDIR="$pkgdir" install
 	}
 	# template end;
-
 
 
 See Also

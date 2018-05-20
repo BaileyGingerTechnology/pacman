@@ -3,7 +3,7 @@
 #  pactest : run automated testing on the pacman binary
 #
 #  Copyright (c) 2006 by Aurelien Foret <orelien@chez.com>
-#  Copyright (c) 2006-2014 Pacman Development Team <pacman-dev@archlinux.org>
+#  Copyright (c) 2006-2016 Pacman Development Team <pacman-dev@archlinux.org>
 #
 #  This program is free software; you can redistribute it and/or modify
 #  it under the terms of the GNU General Public License as published by
@@ -18,7 +18,6 @@
 #  You should have received a copy of the GNU General Public License
 #  along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-import glob
 from optparse import OptionParser
 import os
 import shutil
@@ -31,9 +30,6 @@ import util
 
 __author__ = "Aurelien FORET"
 __version__ = "0.4"
-
-def resolve_binary_path(option, opt_str, value, parser):
-    setattr(parser.values, option.dest, os.path.abspath(value))
 
 def create_parser():
     usage = "usage: %prog [options] <path/to/testfile.py>..."
@@ -48,10 +44,12 @@ def create_parser():
     parser.add_option("-d", "--debug", type = "int",
                       dest = "debug", default = 0,
                       help = "set debug level for pacman")
-    parser.add_option("-p", "--pacman", action = "callback",
-                      callback = resolve_binary_path, type = "string",
-                      dest = "bin", default = "pacman",
+    parser.add_option("-p", "--pacman", type = "string",
+                      dest = "bin", default = None,
                       help = "specify location of the pacman binary")
+    parser.add_option("--bindir", type = "string",
+                      dest = "bindir", action = "append",
+                      help = "specify location of binaries")
     parser.add_option("--keep-root", action = "store_true",
                       dest = "keeproot", default = False,
                       help = "don't remove the generated pacman root filesystem")
@@ -83,16 +81,23 @@ if __name__ == "__main__":
         tap.bail("Python versions before 2.7 are not supported.")
         sys.exit(1)
 
-    # instantiate env and parser objects
-    root_path = tempfile.mkdtemp(prefix='pactest-')
-    env = pmenv.pmenv(root=root_path)
+    # parse options
     opt_parser = create_parser()
     (opts, args) = opt_parser.parse_args()
+
+    if args is None or len(args) == 0:
+        tap.bail("no tests defined, nothing to do")
+        sys.exit(2)
+
+    # instantiate env
+    root_path = tempfile.mkdtemp(prefix='pactest-')
+    env = pmenv.pmenv(root=root_path)
 
     # add parsed options to env object
     util.verbose = opts.verbose
     env.pacman["debug"] = opts.debug
     env.pacman["bin"] = opts.bin
+    env.pacman["bindir"] = opts.bindir
     env.pacman["nolog"] = opts.nolog
     env.pacman["gdb"] = opts.gdb
     env.pacman["valgrind"] = opts.valgrind
@@ -100,16 +105,13 @@ if __name__ == "__main__":
     env.pacman["scriptlet-shell"] = opts.scriptletshell
     env.pacman["ldconfig"] = opts.ldconfig
 
-    opts.testcases = []
-    for path in args:
-        opts.testcases += glob.glob(path)
-    if opts.testcases is None or len(opts.testcases) == 0:
-        tap.bail("no tests defined, nothing to do")
+    try:
+        for i in args:
+            env.addtest(i)
+    except Exception as e:
+        tap.bail(e)
         os.rmdir(root_path)
         sys.exit(2)
-
-    for i in opts.testcases:
-        env.addtest(i)
 
     # run tests
     env.run()

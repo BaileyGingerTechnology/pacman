@@ -1,7 +1,7 @@
 /*
  *  sync.c
  *
- *  Copyright (c) 2006-2014 Pacman Development Team <pacman-dev@archlinux.org>
+ *  Copyright (c) 2006-2016 Pacman Development Team <pacman-dev@archlinux.org>
  *  Copyright (c) 2002-2006 by Judd Vinet <jvinet@zeroflux.org>
  *  Copyright (c) 2005 by Aurelien Foret <orelien@chez.com>
  *  Copyright (c) 2005 by Christian Hamar <krics@linuxforum.hu>
@@ -145,7 +145,13 @@ static alpm_list_t *check_replacers(alpm_handle_t *handle, alpm_pkg_t *lpkg,
 			}
 		}
 		if(found) {
-			int doreplace = 0;
+			alpm_question_replace_t question = {
+				.type = ALPM_QUESTION_REPLACE_PKG,
+				.replace = 0,
+				.oldpkg = lpkg,
+				.newpkg = spkg,
+				.newdb = sdb
+			};
 			alpm_pkg_t *tpkg;
 			/* check IgnorePkg/IgnoreGroup */
 			if(alpm_pkg_should_ignore(handle, spkg)
@@ -156,9 +162,8 @@ static alpm_list_t *check_replacers(alpm_handle_t *handle, alpm_pkg_t *lpkg,
 				continue;
 			}
 
-			QUESTION(handle, ALPM_QUESTION_REPLACE_PKG, lpkg, spkg,
-					sdb->treename, &doreplace);
-			if(!doreplace) {
+			QUESTION(handle, &question);
+			if(!question.replace) {
 				continue;
 			}
 
@@ -276,11 +281,14 @@ alpm_list_t SYMEXPORT *alpm_find_group_pkgs(alpm_list_t *dbs,
 				continue;
 			}
 			if(alpm_pkg_should_ignore(db->handle, pkg)) {
+				alpm_question_install_ignorepkg_t question = {
+					.type = ALPM_QUESTION_INSTALL_IGNOREPKG,
+					.install = 0,
+					.pkg = pkg
+				};
 				ignorelist = alpm_list_add(ignorelist, pkg);
-				int install = 0;
-				QUESTION(db->handle, ALPM_QUESTION_INSTALL_IGNOREPKG, pkg,
-						NULL, NULL, &install);
-				if(!install)
+				QUESTION(db->handle, &question);
+				if(!question.install)
 					continue;
 			}
 			if(!alpm_pkg_find(pkgs, pkg->name)) {
@@ -402,7 +410,7 @@ int _alpm_sync_prepare(alpm_handle_t *handle, alpm_list_t **data)
 
 	if(!(trans->flags & ALPM_TRANS_FLAG_NODEPS)) {
 		alpm_list_t *resolved = NULL;
-		alpm_list_t *remove = NULL;
+		alpm_list_t *remove = alpm_list_copy(trans->remove);
 		alpm_list_t *localpkgs;
 
 		/* Build up list by repeatedly resolving each transaction package */
@@ -416,8 +424,6 @@ int _alpm_sync_prepare(alpm_handle_t *handle, alpm_list_t **data)
 			alpm_pkg_t *spkg = i->data;
 			for(j = spkg->removes; j; j = j->next) {
 				remove = alpm_list_add(remove, j->data);
-				/* do not re-install a (replaced) package even if an update is available */
-				trans->add = alpm_list_remove(trans->add, j->data, _alpm_pkg_cmp, NULL);
 			}
 		}
 
@@ -443,10 +449,13 @@ int _alpm_sync_prepare(alpm_handle_t *handle, alpm_list_t **data)
 		/* If there were unresolvable top-level packages, prompt the user to
 		   see if they'd like to ignore them rather than failing the sync */
 		if(unresolvable != NULL) {
-			int remove_unresolvable = 0;
-			QUESTION(handle, ALPM_QUESTION_REMOVE_PKGS, unresolvable,
-					NULL, NULL, &remove_unresolvable);
-			if(remove_unresolvable) {
+			alpm_question_remove_pkgs_t question = {
+				.type = ALPM_QUESTION_REMOVE_PKGS,
+				.skip = 0,
+				.packages = unresolvable
+			};
+			QUESTION(handle, &question);
+			if(question.skip) {
 				/* User wants to remove the unresolvable packages from the
 				   transaction. The packages will be removed from the actual
 				   transaction when the transaction packages are replaced with a
@@ -515,8 +524,8 @@ int _alpm_sync_prepare(alpm_handle_t *handle, alpm_list_t **data)
 					conflict->package1, conflict->package2);
 
 			/* if sync1 provides sync2, we remove sync2 from the targets, and vice versa */
-			alpm_depend_t *dep1 = _alpm_splitdep(conflict->package1);
-			alpm_depend_t *dep2 = _alpm_splitdep(conflict->package2);
+			alpm_depend_t *dep1 = alpm_dep_from_string(conflict->package1);
+			alpm_depend_t *dep2 = alpm_dep_from_string(conflict->package2);
 			if(_alpm_depcmp(sync1, dep2)) {
 				rsync = sync2;
 				sync = sync1;
@@ -535,12 +544,12 @@ int _alpm_sync_prepare(alpm_handle_t *handle, alpm_list_t **data)
 				}
 				alpm_list_free_inner(deps, (alpm_list_fn_free)alpm_conflict_free);
 				alpm_list_free(deps);
-				_alpm_dep_free(dep1);
-				_alpm_dep_free(dep2);
+				alpm_dep_free(dep1);
+				alpm_dep_free(dep2);
 				goto cleanup;
 			}
-			_alpm_dep_free(dep1);
-			_alpm_dep_free(dep2);
+			alpm_dep_free(dep1);
+			alpm_dep_free(dep2);
 
 			/* Prints warning */
 			_alpm_log(handle, ALPM_LOG_WARNING,
@@ -560,8 +569,12 @@ int _alpm_sync_prepare(alpm_handle_t *handle, alpm_list_t **data)
 		deps = _alpm_outerconflicts(handle->db_local, trans->add);
 
 		for(i = deps; i; i = i->next) {
+			alpm_question_conflict_t question = {
+				.type = ALPM_QUESTION_CONFLICT_PKG,
+				.remove = 0,
+				.conflict = i->data
+			};
 			alpm_conflict_t *conflict = i->data;
-			int doremove = 0;
 			int found = 0;
 
 			/* if conflict->package2 (the local package) is not elected for removal,
@@ -582,9 +595,8 @@ int _alpm_sync_prepare(alpm_handle_t *handle, alpm_list_t **data)
 			_alpm_log(handle, ALPM_LOG_DEBUG, "package '%s' conflicts with '%s'\n",
 					conflict->package1, conflict->package2);
 
-			QUESTION(handle, ALPM_QUESTION_CONFLICT_PKG, conflict->package1,
-							conflict->package2, conflict->reason->name, &doremove);
-			if(doremove) {
+			QUESTION(handle, &question);
+			if(question.remove) {
 				/* append to the removes list */
 				alpm_pkg_t *sync = alpm_pkg_find(trans->add, conflict->package1);
 				alpm_pkg_t *local = _alpm_db_get_pkgfromcache(handle->db_local, conflict->package2);
@@ -647,7 +659,12 @@ int _alpm_sync_prepare(alpm_handle_t *handle, alpm_list_t **data)
 	for(i = trans->add; i; i = i->next) {
 		/* update download size field */
 		alpm_pkg_t *spkg = i->data;
+		alpm_pkg_t *lpkg = alpm_db_get_pkg(handle->db_local, spkg->name);
 		if(compute_download_size(spkg) < 0) {
+			ret = -1;
+			goto cleanup;
+		}
+		if(lpkg && _alpm_pkg_dup(lpkg, &spkg->oldpkg) != 0) {
 			ret = -1;
 			goto cleanup;
 		}
@@ -724,11 +741,11 @@ static int apply_deltas(alpm_handle_t *handle)
 			} else {
 				/* len = cachedir len + from len + '/' + null */
 				len = strlen(cachedir) + strlen(d->from) + 2;
-				MALLOC(from, len, RET_ERR(handle, ALPM_ERR_MEMORY, 1));
+				MALLOC(from, len, free(delta); RET_ERR(handle, ALPM_ERR_MEMORY, 1));
 				snprintf(from, len, "%s/%s", cachedir, d->from);
 			}
 			len = strlen(cachedir) + strlen(d->to) + 2;
-			MALLOC(to, len, free(from); RET_ERR(handle, ALPM_ERR_MEMORY, 1));
+			MALLOC(to, len, free(delta); free(from); RET_ERR(handle, ALPM_ERR_MEMORY, 1));
 			snprintf(to, len, "%s/%s", cachedir, d->to);
 
 			/* build the patch command */
@@ -793,13 +810,17 @@ static int apply_deltas(alpm_handle_t *handle)
 static int prompt_to_delete(alpm_handle_t *handle, const char *filepath,
 		alpm_errno_t reason)
 {
-	int doremove = 0;
-	QUESTION(handle, ALPM_QUESTION_CORRUPTED_PKG, (char *)filepath,
-			&reason, NULL, &doremove);
-	if(doremove) {
+	alpm_question_corrupted_t question = {
+		.type = ALPM_QUESTION_CORRUPTED_PKG,
+		.remove = 0,
+		.filepath = filepath,
+		.reason = reason
+	};
+	QUESTION(handle, &question);
+	if(question.remove) {
 		unlink(filepath);
 	}
-	return doremove;
+	return question.remove;
 }
 
 static int validate_deltas(alpm_handle_t *handle, alpm_list_t *deltas)
@@ -846,7 +867,7 @@ static struct dload_payload *build_payload(alpm_handle_t *handle,
 		struct dload_payload *payload;
 
 		CALLOC(payload, 1, sizeof(*payload), RET_ERR(handle, ALPM_ERR_MEMORY, NULL));
-		STRDUP(payload->remote_name, filename, RET_ERR(handle, ALPM_ERR_MEMORY, NULL));
+		STRDUP(payload->remote_name, filename, FREE(payload); RET_ERR(handle, ALPM_ERR_MEMORY, NULL));
 		payload->max_size = size;
 		payload->servers = servers;
 		return payload;
@@ -1058,10 +1079,9 @@ static int check_keyring(alpm_handle_t *handle)
 					alpm_list_t *k;
 					for(k = keys; k; k = k->next) {
 						char *key = k->data;
-						if(_alpm_key_in_keychain(handle, key) == 0) {
-							if(!alpm_list_find_str(errors, key)) {
-								errors = alpm_list_add(errors, strdup(key));
-							}
+						if(!alpm_list_find_str(errors, key) &&
+								_alpm_key_in_keychain(handle, key) == 0) {
+							errors = alpm_list_add(errors, strdup(key));
 						}
 					}
 					FREELIST(keys);
@@ -1197,6 +1217,7 @@ static int load_packages(alpm_handle_t *handle, alpm_list_t **data,
 	EVENT(handle, &event);
 
 	for(i = handle->trans->add; i; i = i->next, current++) {
+		int error = 0;
 		alpm_pkg_t *spkg = i->data;
 		char *filepath;
 		int percent = (int)(((double)current_bytes / total_bytes) * 100);
@@ -1217,6 +1238,23 @@ static int load_packages(alpm_handle_t *handle, alpm_list_t **data,
 				spkg->name);
 		alpm_pkg_t *pkgfile =_alpm_pkg_load_internal(handle, filepath, 1);
 		if(!pkgfile) {
+			_alpm_log(handle, ALPM_LOG_DEBUG, "failed to load pkgfile internal\n");
+			error = 1;
+		} else {
+			if(strcmp(spkg->name, pkgfile->name) != 0) {
+				_alpm_log(handle, ALPM_LOG_DEBUG,
+						"internal package name mismatch, expected: '%s', actual: '%s'\n",
+						spkg->name, pkgfile->name);
+				error = 1;
+			}
+			if(strcmp(spkg->version, pkgfile->version) != 0) {
+				_alpm_log(handle, ALPM_LOG_DEBUG,
+						"internal package version mismatch, expected: '%s', actual: '%s'\n",
+						spkg->version, pkgfile->version);
+				error = 1;
+			}
+		}
+		if(error != 0) {
 			errors++;
 			*data = alpm_list_add(*data, strdup(spkg->filename));
 			free(filepath);
@@ -1227,6 +1265,9 @@ static int load_packages(alpm_handle_t *handle, alpm_list_t **data,
 		pkgfile->reason = spkg->reason;
 		/* copy over validation method */
 		pkgfile->validation = spkg->validation;
+		/* transfer oldpkg */
+		pkgfile->oldpkg = spkg->oldpkg;
+		spkg->oldpkg = NULL;
 		i->data = pkgfile;
 		/* spkg has been removed from the target list, so we can free the
 		 * sync-specific fields */
@@ -1248,13 +1289,12 @@ static int load_packages(alpm_handle_t *handle, alpm_list_t **data,
 	return 0;
 }
 
-int _alpm_sync_commit(alpm_handle_t *handle, alpm_list_t **data)
+int _alpm_sync_load(alpm_handle_t *handle, alpm_list_t **data)
 {
 	alpm_list_t *i, *deltas = NULL;
 	size_t total = 0;
 	uint64_t total_bytes = 0;
 	alpm_trans_t *trans = handle->trans;
-	alpm_event_t event;
 
 	if(download_files(handle, &deltas)) {
 		alpm_list_free(deltas);
@@ -1291,14 +1331,8 @@ int _alpm_sync_commit(alpm_handle_t *handle, alpm_list_t **data)
 	/* this can only happen maliciously */
 	total_bytes = total_bytes ? total_bytes : 1;
 
-	/* this one is special: -1 is failure, 1 is retry, 0 is success */
-	while(1) {
-		int ret = check_validity(handle, total, total_bytes);
-		if(ret == 0) {
-			break;
-		} else if(ret < 0) {
-			return -1;
-		}
+	if(check_validity(handle, total, total_bytes) != 0) {
+		return -1;
 	}
 
 	if(trans->flags & ALPM_TRANS_FLAG_DOWNLOADONLY) {
@@ -1309,7 +1343,13 @@ int _alpm_sync_commit(alpm_handle_t *handle, alpm_list_t **data)
 		return -1;
 	}
 
-	trans->state = STATE_COMMITING;
+	return 0;
+}
+
+int _alpm_sync_check(alpm_handle_t *handle, alpm_list_t **data)
+{
+	alpm_trans_t *trans = handle->trans;
+	alpm_event_t event;
 
 	/* fileconflict check */
 	if(!(trans->flags & ALPM_TRANS_FLAG_DBONLY)) {
@@ -1323,7 +1363,8 @@ int _alpm_sync_commit(alpm_handle_t *handle, alpm_list_t **data)
 			if(data) {
 				*data = conflict;
 			} else {
-				alpm_list_free_inner(conflict, (alpm_list_fn_free)alpm_fileconflict_free);
+				alpm_list_free_inner(conflict,
+						(alpm_list_fn_free)alpm_fileconflict_free);
 				alpm_list_free(conflict);
 			}
 			RET_ERR(handle, ALPM_ERR_FILE_CONFLICTS, -1);
@@ -1348,12 +1389,21 @@ int _alpm_sync_commit(alpm_handle_t *handle, alpm_list_t **data)
 		EVENT(handle, &event);
 	}
 
+	return 0;
+}
+
+int _alpm_sync_commit(alpm_handle_t *handle)
+{
+	alpm_trans_t *trans = handle->trans;
+
 	/* remove conflicting and to-be-replaced packages */
 	if(trans->remove) {
-		_alpm_log(handle, ALPM_LOG_DEBUG, "removing conflicting and to-be-replaced packages\n");
+		_alpm_log(handle, ALPM_LOG_DEBUG,
+				"removing conflicting and to-be-replaced packages\n");
 		/* we want the frontend to be aware of commit details */
 		if(_alpm_remove_packages(handle, 0) == -1) {
-			_alpm_log(handle, ALPM_LOG_ERROR, _("could not commit removal transaction\n"));
+			_alpm_log(handle, ALPM_LOG_ERROR,
+					_("could not commit removal transaction\n"));
 			return -1;
 		}
 	}

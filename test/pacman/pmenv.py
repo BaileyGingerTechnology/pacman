@@ -1,5 +1,5 @@
 #  Copyright (c) 2006 by Aurelien Foret <orelien@chez.com>
-#  Copyright (c) 2006-2014 Pacman Developmet Team <pacman-dev@archlinux.org>
+#  Copyright (c) 2006-2016 Pacman Development Team <pacman-dev@archlinux.org>
 #
 #  This program is free software; you can redistribute it and/or modify
 #  it under the terms of the GNU General Public License as published by
@@ -34,7 +34,8 @@ class pmenv(object):
     def __init__(self, root = "root"):
         self.root = os.path.abspath(root)
         self.pacman = {
-            "bin": "pacman",
+            "bin": None,
+            "bindir": ["/usr/bin/"],
             "debug": 0,
             "gdb": 0,
             "valgrind": 0,
@@ -51,14 +52,14 @@ class pmenv(object):
         """
         if not os.path.isfile(testcase):
             raise IOError("test file %s not found" % testcase)
-        test = pmtest.pmtest(testcase, self.root)
-        self.testcases.append(test)
+        self.testcases.append(testcase)
 
     def run(self):
         """
         """
         tap.plan(len(self.testcases))
-        for t in self.testcases:
+        for testcase in self.testcases:
+            t = pmtest.pmtest(testcase, self.root)
             tap.diag("Running '%s'" % t.testname)
 
             t.load()

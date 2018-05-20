@@ -23,10 +23,11 @@ shopt -s extglob
 declare -r myname='paccache'
 declare -r myver='@PACKAGE_VERSION@'
 
-declare -a candidates=() cmdopts=() whitelist=() blacklist=()
+declare -a cachedirs=() candidates=() cmdopts=() whitelist=() blacklist=()
 declare -i delete=0 dryrun=0 filecount=0 move=0 needsroot=0 totalsaved=0 verbose=0
-declare    cachedir=@localstatedir@/cache/pacman/pkg delim=$'\n' keep=3 movedir= scanarch=
+declare    delim=$'\n' keep=3 movedir= scanarch=
 
+QUIET=0
 USE_COLOR='y'
 
 m4_include(../scripts/library/output_format.sh)
@@ -37,15 +38,33 @@ die() {
 	exit 1
 }
 
+get_cachedir_from_config() {
+	local key value
+
+	while IFS=$'= \t' read -r key value _; do
+		if [[ $key = CacheDir ]]; then
+			echo "$value"
+			return 0
+		fi
+	done <"$1"
+
+	return 1
+}
+
 # reads a list of files on stdin and prints out deletion candidates
 pkgfilter() {
 	# there's whitelist and blacklist parameters passed to this
 	# script after the block of awk.
 
 	awk -v keep="$1" -v scanarch="$2" '
+	function basename(str) {
+		sub(".*/", "", str);
+		return str;
+	}
+
 	function parse_filename(filename,     parts, count, i, pkgname, arch) {
 
-		count = split(filename, parts, "-")
+		count = split(basename(filename), parts, "-")
 
 		i = 1
 		pkgname = parts[i++]
@@ -117,6 +136,8 @@ runcmd() {
 }
 
 summarize() {
+	(( QUIET )) && return
+
 	local -i filecount=$1; shift
 	local seenarch= seen= arch= name=
 	local -r pkg_re='(.+)-[^-]+-[0-9]+-([^.]+)\.pkg.*'
@@ -133,20 +154,20 @@ summarize() {
 					[[ $pkg =~ $pkg_re ]] && name=${BASH_REMATCH[1]} arch=${BASH_REMATCH[2]}
 					if [[ -z $seen || $seenarch != "$arch" || $seen != "$name" ]]; then
 						seen=$name seenarch=$arch
-						printf '%s (%s):\n' "$name" "$arch"
+						printf '%s (%s):\n' "${name##*/}" "$arch"
 					fi
-					printf '  %s\n' "$pkg"
+					printf '  %s\n' "${pkg##*/}"
 				elif (( verbose >= 2 )); then
-					printf "$PWD/%s$delim" "$pkg"
-				else
 					printf "%s$delim" "$pkg"
+				else
+					printf "%s$delim" "${pkg##*/}"
 				fi
 			done < <(printf '%s\n' "$@" | pacsort --files)
 		fi
 		printf -v output 'finished dry run: %d candidates' "$filecount"
 	fi
 
-	printf '\n' >&2
+	echo
 	msg "$output (disk space saved: %s)" "$(size_to_human "$totalsaved")"
 }
 
@@ -165,15 +186,16 @@ Usage: ${myname} <operation> [options] [targets...]
 
   Options:
     -a, --arch <arch>     scan for "arch" (default: all architectures).
-    -c, --cachedir <dir>  scan "dir" for packages.
-                          (default: @localstatedir@/cache/pacman/pkg).
+    -c, --cachedir <dir>  scan "dir" for packages. can be used more than once.
+                          (default: read from @sysconfdir@/pacman.conf).
     -f, --force           apply force to mv(1) and rm(1) operations.
     -h, --help            display this help message and exit.
     -i, --ignore <pkgs>   ignore "pkgs", comma-separated. Alternatively, specify
                           "-" to read package names from stdin, newline-
                           delimited.
     -k, --keep <num>      keep "num" of each package in the cache (default: 3).
-    --nocolor             remove color from output.
+        --nocolor         remove color from output.
+    -q, --quiet           minimize output
     -u, --uninstalled     target uninstalled packages.
     -v, --verbose         increase verbosity. specify up to 3 times.
     -z, --null            use null delimiters for candidate names (only with -v
@@ -187,9 +209,9 @@ version() {
 	echo 'Copyright (C) 2011 Dave Reisner <dreisner@archlinux.org>'
 }
 
-OPT_SHORT=':a:c:dfhi:k:m:rsuVvz'
+OPT_SHORT=':a:c:dfhi:k:m:qrsuVvz'
 OPT_LONG=('arch:' 'cachedir:' 'dryrun' 'force' 'help' 'ignore:' 'keep:' 'move'
-          'nocolor' 'remove' 'uninstalled' 'version' 'verbose' 'null')
+          'nocolor' 'quiet' 'remove' 'uninstalled' 'version' 'verbose' 'null')
 
 if ! parseopts "$OPT_SHORT" "${OPT_LONG[@]}" -- "$@"; then
 	exit 1
@@ -203,7 +225,7 @@ while :; do
 			scanarch=$2
 			shift ;;
 		-c|--cachedir)
-			cachedir=$2
+			cachedirs+=("$2")
 			shift ;;
 		-d|--dryrun)
 			dryrun=1 ;;
@@ -229,15 +251,19 @@ while :; do
 				keep=$(( 10#$keep ))
 			fi
 			shift ;;
-		--nocolor)
-			USE_COLOR='n' ;;
 		-m|--move)
 			move=1 movedir=$2
 			shift ;;
+		--nocolor)
+			USE_COLOR='n' ;;
+		-q|--quiet)
+			QUIET=1 ;;
 		-r|--remove)
 			delete=1 ;;
 		-u|--uninstalled)
 			IFS=$'\n' read -r -d '' -a ign < <(pacman -Qq)
+			# pacman -Qq may exit with an error, thus making ign an empty array
+			(( ${#ign[@]} )) || die 'failed to retrieve the list of installed packages'
 			blacklist+=("${ign[@]}")
 			unset ign ;;
 		-V|--version)
@@ -256,6 +282,15 @@ done
 
 m4_include(../scripts/library/term_colors.sh)
 
+# setting default cachedir
+if [[ -z $cachedirs ]]; then
+	if cachedir=$(get_cachedir_from_config "@sysconfdir@/pacman.conf"); then
+		cachedirs=("$cachedir")
+	else
+		cachedirs=("${cachedirs[@]:-@localstatedir@/cache/pacman/pkg}")
+	fi
+fi
+
 # remaining args are a whitelist
 whitelist=("$@")
 
@@ -265,32 +300,43 @@ case $(( dryrun+delete+move )) in
 	[^1]) die "only one operation may be used at a time" ;;
 esac
 
-[[ -d $cachedir ]] ||
-	die "cachedir '%s' does not exist or is not a directory" "$cachedir"
-
 [[ $movedir && ! -d $movedir ]] &&
 	die "destination directory '%s' does not exist or is not a directory" "$movedir"
 
 if (( move || delete )); then
 	# make it an absolute path since we're about to chdir
-	[[ ${movedir:0:1} != '/' ]] && movedir=$PWD/$movedir
-	[[ ! -w $cachedir || ( $movedir && ! -w $movedir ) ]] && needsroot=1
+	[[ $movedir && ${movedir:0:1} != '/' ]] && movedir=$PWD/$movedir
+	[[ $movedir && ! -w $movedir ]] && needsroot=1
 fi
 
-# unlikely that this will fail, but better make sure
-cd "$cachedir" >/dev/null || die "failed to chdir to '%s'" "$cachedir"
+for cachedir in "${cachedirs[@]}"; do
+	[[ -d $cachedir ]] ||
+		die "cachedir '%s' does not exist or is not a directory" "$cachedir"
 
-# note that these results are returned in an arbitrary order from awk, but
-# they'll be resorted (in summarize) iff we have a verbosity level set.
-IFS=$'\n' read -r -d '' -a candidates < \
-	<(printf '%s\n' *.pkg.tar?(.+([^.])) | pacsort --files |
-		pkgfilter "$keep" "$scanarch" \
-			"${#whitelist[*]}" "${whitelist[@]}" \
-			"${#blacklist[*]}" "${blacklist[@]}")
+	if (( move || delete )); then
+		[[ ! -w $cachedir ]] && needsroot=1
+	fi
+
+	# unlikely that this will fail, but better make sure
+	pushd "$cachedir" &>/dev/null || die "failed to chdir to '%s'" "$cachedir"
+
+	# note that these results are returned in an arbitrary order from awk, but
+	# they'll be resorted (in summarize) iff we have a verbosity level set.
+	IFS=$'\n' read -r -d '' -a cand < \
+		<(printf '%s\n' "$PWD"/*.pkg.tar?(.+([^.])) | pacsort --files |
+			pkgfilter "$keep" "$scanarch" \
+				"${#whitelist[*]}" "${whitelist[@]}" \
+				"${#blacklist[*]}" "${blacklist[@]}")
+
+	candidates+=("${cand[@]}")
+	unset cand
+
+	popd &>/dev/null
+done
 
 if (( ! ${#candidates[*]} )); then
 	msg 'no candidate packages found for pruning'
-	exit 1
+	exit 0
 fi
 
 # grab this prior to signature scavenging

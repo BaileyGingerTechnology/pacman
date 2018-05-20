@@ -1,5 +1,5 @@
 #  Copyright (c) 2006 by Aurelien Foret <orelien@chez.com>
-#  Copyright (c) 2006-2014 Pacman Development Team <pacman-dev@archlinux.org>
+#  Copyright (c) 2006-2016 Pacman Development Team <pacman-dev@archlinux.org>
 #
 #  This program is free software; you can redistribute it and/or modify
 #  it under the terms of the GNU General Public License as published by
@@ -30,6 +30,7 @@ PM_SYNCDBPATH = "var/lib/pacman/sync"
 PM_LOCK     = "var/lib/pacman/db.lck"
 PM_CACHEDIR = "var/cache/pacman/pkg"
 PM_EXT_PKG  = ".pkg.tar.gz"
+PM_HOOKDIR  = "etc/pacman.d/hooks"
 
 # Pacman
 PACCONF     = "etc/pacman.conf"
@@ -83,7 +84,7 @@ def mkfile(base, name, data=""):
     if info["isdir"]:
         if not os.path.isdir(path):
             os.makedirs(path, 0o755)
-        return
+        return path
 
     dir_path = os.path.dirname(path)
     if dir_path and not os.path.isdir(dir_path):
@@ -96,6 +97,8 @@ def mkfile(base, name, data=""):
 
     if info["perms"]:
         os.chmod(path, info["perms"])
+
+    return path
 
 def writedata(filename, data):
     if isinstance(data, list):
@@ -157,8 +160,9 @@ def mkmd5sum(data):
 # Miscellaneous
 #
 
-def which(filename):
-    path = os.environ["PATH"].split(':')
+def which(filename, path=None):
+    if not path:
+        path = os.environ["PATH"].split(os.pathsep)
     for p in path:
         f = os.path.join(p, filename)
         if os.access(f, os.F_OK):

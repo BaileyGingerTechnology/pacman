@@ -1,7 +1,7 @@
 /*
  *  trans.c
  *
- *  Copyright (c) 2006-2014 Pacman Development Team <pacman-dev@archlinux.org>
+ *  Copyright (c) 2006-2016 Pacman Development Team <pacman-dev@archlinux.org>
  *  Copyright (c) 2002-2006 by Judd Vinet <jvinet@zeroflux.org>
  *  Copyright (c) 2005 by Aurelien Foret <orelien@chez.com>
  *  Copyright (c) 2005 by Christian Hamar <krics@linuxforum.hu>
@@ -40,6 +40,7 @@
 #include "sync.h"
 #include "alpm.h"
 #include "deps.h"
+#include "hook.h"
 
 /** \addtogroup alpm_trans Transaction Functions
  * @brief Functions to manipulate libalpm transactions
@@ -159,6 +160,7 @@ int SYMEXPORT alpm_trans_prepare(alpm_handle_t *handle, alpm_list_t **data)
 int SYMEXPORT alpm_trans_commit(alpm_handle_t *handle, alpm_list_t **data)
 {
 	alpm_trans_t *trans;
+	alpm_event_any_t event;
 
 	/* Sanity checks */
 	CHECK_HANDLE(handle, return -1);
@@ -175,18 +177,55 @@ int SYMEXPORT alpm_trans_commit(alpm_handle_t *handle, alpm_list_t **data)
 		return 0;
 	}
 
+	if(trans->add) {
+		if(_alpm_sync_load(handle, data) != 0) {
+			/* pm_errno is set by _alpm_sync_load() */
+			return -1;
+		}
+		if(trans->flags & ALPM_TRANS_FLAG_DOWNLOADONLY) {
+			return 0;
+		}
+		if(_alpm_sync_check(handle, data) != 0) {
+			/* pm_errno is set by _alpm_sync_check() */
+			return -1;
+		}
+	}
+
+	if(_alpm_hook_run(handle, ALPM_HOOK_PRE_TRANSACTION) != 0) {
+		RET_ERR(handle, ALPM_ERR_TRANS_HOOK_FAILED, -1);
+	}
+
 	trans->state = STATE_COMMITING;
+
+	alpm_logaction(handle, ALPM_CALLER_PREFIX, "transaction started\n");
+	event.type = ALPM_EVENT_TRANSACTION_START;
+	EVENT(handle, (void *)&event);
 
 	if(trans->add == NULL) {
 		if(_alpm_remove_packages(handle, 1) == -1) {
 			/* pm_errno is set by _alpm_remove_packages() */
+			alpm_errno_t save = handle->pm_errno;
+			alpm_logaction(handle, ALPM_CALLER_PREFIX, "transaction failed\n");
+			handle->pm_errno = save;
 			return -1;
 		}
 	} else {
-		if(_alpm_sync_commit(handle, data) == -1) {
+		if(_alpm_sync_commit(handle) == -1) {
 			/* pm_errno is set by _alpm_sync_commit() */
+			alpm_errno_t save = handle->pm_errno;
+			alpm_logaction(handle, ALPM_CALLER_PREFIX, "transaction failed\n");
+			handle->pm_errno = save;
 			return -1;
 		}
+	}
+
+	if(trans->state == STATE_INTERRUPTED) {
+		alpm_logaction(handle, ALPM_CALLER_PREFIX, "transaction interrupted\n");
+	} else {
+		event.type = ALPM_EVENT_TRANSACTION_DONE;
+		EVENT(handle, (void *)&event);
+		alpm_logaction(handle, ALPM_CALLER_PREFIX, "transaction completed\n");
+		_alpm_hook_run(handle, ALPM_HOOK_POST_TRANSACTION);
 	}
 
 	trans->state = STATE_COMMITED;
@@ -194,7 +233,9 @@ int SYMEXPORT alpm_trans_commit(alpm_handle_t *handle, alpm_list_t **data)
 	return 0;
 }
 
-/** Interrupt a transaction. */
+/** Interrupt a transaction.
+ * @note Safe to call from inside signal handlers.
+ */
 int SYMEXPORT alpm_trans_interrupt(alpm_handle_t *handle)
 {
 	alpm_trans_t *trans;
@@ -203,9 +244,9 @@ int SYMEXPORT alpm_trans_interrupt(alpm_handle_t *handle)
 	CHECK_HANDLE(handle, return -1);
 
 	trans = handle->trans;
-	ASSERT(trans != NULL, RET_ERR(handle, ALPM_ERR_TRANS_NULL, -1));
+	ASSERT(trans != NULL, RET_ERR_ASYNC_SAFE(handle, ALPM_ERR_TRANS_NULL, -1));
 	ASSERT(trans->state == STATE_COMMITING || trans->state == STATE_INTERRUPTED,
-			RET_ERR(handle, ALPM_ERR_TRANS_TYPE, -1));
+			RET_ERR_ASYNC_SAFE(handle, ALPM_ERR_TRANS_TYPE, -1));
 
 	trans->state = STATE_INTERRUPTED;
 
@@ -231,12 +272,7 @@ int SYMEXPORT alpm_trans_release(alpm_handle_t *handle)
 
 	/* unlock db */
 	if(!nolock_flag) {
-		if(_alpm_handle_unlock(handle)) {
-			_alpm_log(handle, ALPM_LOG_WARNING, _("could not remove lock file %s\n"),
-					handle->lockfile);
-			alpm_logaction(handle, ALPM_CALLER_PREFIX,
-				"warning: could not remove lock file %s\n", handle->lockfile);
-		}
+		_alpm_handle_unlock(handle);
 	}
 
 	return 0;
@@ -275,7 +311,7 @@ static int grep(const char *fn, const char *needle)
 	}
 	while(!feof(fp)) {
 		char line[1024];
-		if(fgets(line, sizeof(line), fp) == NULL) {
+		if(safe_fgets(line, sizeof(line), fp) == NULL) {
 			continue;
 		}
 		/* TODO: this will not work if the search string
@@ -328,7 +364,7 @@ int _alpm_runscriptlet(alpm_handle_t *handle, const char *filepath,
 
 	/* either extract or copy the scriptlet */
 	len += strlen("/.INSTALL");
-	MALLOC(scriptfn, len, RET_ERR(handle, ALPM_ERR_MEMORY, -1));
+	MALLOC(scriptfn, len, free(tmpdir); RET_ERR(handle, ALPM_ERR_MEMORY, -1));
 	snprintf(scriptfn, len, "%s/.INSTALL", tmpdir);
 	if(is_archive) {
 		if(_alpm_unpack_single(handle, filepath, tmpdir, ".INSTALL")) {
@@ -362,7 +398,7 @@ int _alpm_runscriptlet(alpm_handle_t *handle, const char *filepath,
 
 	_alpm_log(handle, ALPM_LOG_DEBUG, "executing \"%s\"\n", cmdline);
 
-	retval = _alpm_run_chroot(handle, SCRIPTLET_SHELL, argv);
+	retval = _alpm_run_chroot(handle, SCRIPTLET_SHELL, argv, NULL, NULL);
 
 cleanup:
 	if(scriptfn && unlink(scriptfn)) {

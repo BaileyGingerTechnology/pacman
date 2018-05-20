@@ -1,7 +1,7 @@
 /*
  *  package.h
  *
- *  Copyright (c) 2006-2014 Pacman Development Team <pacman-dev@archlinux.org>
+ *  Copyright (c) 2006-2016 Pacman Development Team <pacman-dev@archlinux.org>
  *  Copyright (c) 2002-2006 by Judd Vinet <jvinet@zeroflux.org>
  *  Copyright (c) 2005 by Aurelien Foret <orelien@chez.com>
  *  Copyright (c) 2006 by David Kimpe <dnaku@frugalware.org>
@@ -21,8 +21,8 @@
  *  You should have received a copy of the GNU General Public License
  *  along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
-#ifndef _ALPM_PACKAGE_H
-#define _ALPM_PACKAGE_H
+#ifndef ALPM_PACKAGE_H
+#define ALPM_PACKAGE_H
 
 #include <sys/types.h> /* off_t */
 
@@ -37,12 +37,13 @@
 
 /** Package operations struct. This struct contains function pointers to
  * all methods used to access data in a package to allow for things such
- * as lazy package intialization (such as used by the file backend). Each
+ * as lazy package initialization (such as used by the file backend). Each
  * backend is free to define a stuct containing pointers to a specific
  * implementation of these methods. Some backends may find using the
  * defined default_pkg_ops struct to work just fine for their needs.
  */
 struct pkg_operations {
+	const char *(*get_base) (alpm_pkg_t *);
 	const char *(*get_desc) (alpm_pkg_t *);
 	const char *(*get_url) (alpm_pkg_t *);
 	alpm_time_t (*get_builddate) (alpm_pkg_t *);
@@ -85,6 +86,7 @@ extern struct pkg_operations default_pkg_ops;
 struct __alpm_pkg_t {
 	unsigned long name_hash;
 	char *filename;
+	char *base;
 	char *name;
 	char *version;
 	char *desc;
@@ -115,6 +117,7 @@ struct __alpm_pkg_t {
 	alpm_list_t *deltas;
 	alpm_list_t *delta_path;
 	alpm_list_t *removes; /* in transaction targets only */
+	alpm_pkg_t *oldpkg; /* in transaction targets only */
 
 	struct pkg_operations *ops;
 
@@ -150,6 +153,6 @@ alpm_pkg_t *_alpm_pkg_load_internal(alpm_handle_t *handle,
 int _alpm_pkg_cmp(const void *p1, const void *p2);
 int _alpm_pkg_compare_versions(alpm_pkg_t *local_pkg, alpm_pkg_t *pkg);
 
-#endif /* _ALPM_PACKAGE_H */
+#endif /* ALPM_PACKAGE_H */
 
 /* vim: set noet: */

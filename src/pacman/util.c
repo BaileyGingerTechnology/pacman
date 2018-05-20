@@ -1,7 +1,7 @@
 /*
  *  util.c
  *
- *  Copyright (c) 2006-2014 Pacman Development Team <pacman-dev@archlinux.org>
+ *  Copyright (c) 2006-2016 Pacman Development Team <pacman-dev@archlinux.org>
  *  Copyright (c) 2002-2006 by Judd Vinet <jvinet@zeroflux.org>
  *
  *  This program is free software; you can redistribute it and/or modify
@@ -29,11 +29,11 @@
 #include <stdint.h> /* intmax_t */
 #include <string.h>
 #include <errno.h>
-#include <ctype.h>
 #include <dirent.h>
 #include <unistd.h>
 #include <limits.h>
 #include <wchar.h>
+#include <wctype.h>
 #ifdef HAVE_TERMIOS_H
 #include <termios.h> /* tcflush */
 #endif
@@ -46,6 +46,7 @@
 #include "conf.h"
 #include "callback.h"
 
+static int cached_columns = -1;
 
 struct table_cell_t {
 	char *label;
@@ -104,7 +105,7 @@ int needs_root(void)
 {
 	switch(config->op) {
 		case PM_OP_DATABASE:
-			return 1;
+			return !config->op_q_check;
 		case PM_OP_UPGRADE:
 		case PM_OP_REMOVE:
 			return !config->print;
@@ -112,6 +113,8 @@ int needs_root(void)
 			return (config->op_s_clean || config->op_s_sync ||
 					(!config->group && !config->op_s_info && !config->op_q_list &&
 					 !config->op_s_search && !config->print));
+		case PM_OP_FILES:
+			return config->op_s_sync;
 		default:
 			return 0;
 	}
@@ -142,6 +145,37 @@ int check_syncdbs(size_t need_repos, int check_valid)
 	return ret;
 }
 
+int sync_syncdbs(int level, alpm_list_t *syncs)
+{
+	alpm_list_t *i;
+	unsigned int success = 0;
+
+	for(i = syncs; i; i = alpm_list_next(i)) {
+		alpm_db_t *db = i->data;
+
+		int ret = alpm_db_update((level < 2 ? 0 : 1), db);
+		if(ret < 0) {
+			pm_printf(ALPM_LOG_ERROR, _("failed to update %s (%s)\n"),
+					alpm_db_get_name(db), alpm_strerror(alpm_errno(config->handle)));
+		} else if(ret == 1) {
+			printf(_(" %s is up to date\n"), alpm_db_get_name(db));
+			success++;
+		} else {
+			success++;
+		}
+	}
+
+	/* We should always succeed if at least one DB was upgraded - we may possibly
+	 * fail later with unresolved deps, but that should be rare, and would be
+	 * expected
+	 */
+	if(!success) {
+		pm_printf(ALPM_LOG_ERROR, _("failed to synchronize any databases\n"));
+		trans_init_error();
+	}
+	return (success > 0);
+}
+
 /* discard unhandled input on the terminal's input buffer */
 static int flush_term_input(int fd)
 {
@@ -155,29 +189,66 @@ static int flush_term_input(int fd)
 	return 0;
 }
 
-/* gets the current screen column width */
-unsigned short getcols(int fd)
+void columns_cache_reset(void)
 {
-	const unsigned short default_tty = 80;
-	const unsigned short default_notty = 0;
-	unsigned short termwidth = 0;
+	cached_columns = -1;
+}
+
+static int getcols_fd(int fd)
+{
+	int width = -1;
 
 	if(!isatty(fd)) {
-		return default_notty;
+		return 0;
 	}
 
 #if defined(TIOCGSIZE)
 	struct ttysize win;
 	if(ioctl(fd, TIOCGSIZE, &win) == 0) {
-		termwidth = win.ts_cols;
+		width = win.ts_cols;
 	}
 #elif defined(TIOCGWINSZ)
 	struct winsize win;
 	if(ioctl(fd, TIOCGWINSZ, &win) == 0) {
-		termwidth = win.ws_col;
+		width = win.ws_col;
 	}
 #endif
-	return termwidth == 0 ? default_tty : termwidth;
+
+	if(width <= 0) {
+		return -EIO;
+	}
+
+	return width;
+}
+
+unsigned short getcols(void)
+{
+	const char *e;
+	int c = -1;
+
+	if(cached_columns >= 0) {
+		return cached_columns;
+	}
+
+	e = getenv("COLUMNS");
+	if(e && *e) {
+		char *p = NULL;
+		c = strtol(e, &p, 10);
+		if(*p != '\0') {
+			c= -1;
+		}
+	}
+
+	if(c < 0) {
+		c = getcols_fd(STDOUT_FILENO);
+	}
+
+	if(c < 0) {
+		c = 80;
+	}
+
+	cached_columns = c;
+	return c;
 }
 
 /* does the same thing as 'rm -rf' */
@@ -246,6 +317,7 @@ void indentprint(const char *str, unsigned short indent, unsigned short cols)
 	cidx = indent;
 
 	if(!p || !len) {
+		free(wcstr);
 		return;
 	}
 
@@ -279,43 +351,6 @@ void indentprint(const char *str, unsigned short indent, unsigned short cols)
 		p++;
 	}
 	free(wcstr);
-}
-
-/* Trim whitespace and newlines from a string
- */
-size_t strtrim(char *str)
-{
-	char *end, *pch = str;
-
-	if(str == NULL || *str == '\0') {
-		/* string is empty, so we're done. */
-		return 0;
-	}
-
-	while(isspace((unsigned char)*pch)) {
-		pch++;
-	}
-	if(pch != str) {
-		size_t len = strlen(pch);
-		if(len) {
-			memmove(str, pch, len + 1);
-		} else {
-			*str = '\0';
-		}
-	}
-
-	/* check if there wasn't anything but whitespace in the string. */
-	if(*str == '\0') {
-		return 0;
-	}
-
-	end = (str + strlen(str) - 1);
-	while(isspace((unsigned char)*end)) {
-		end--;
-	}
-	*++end = '\0';
-
-	return end - pch;
 }
 
 /* Replace all occurrences of 'needle' with 'replace' in 'str', returning
@@ -432,7 +467,7 @@ static void table_free(alpm_list_t *headers, alpm_list_t *rows)
 	alpm_list_free(rows);
 }
 
-static void add_transaction_sizes_row(alpm_list_t **rows, char *label, int size)
+static void add_transaction_sizes_row(alpm_list_t **rows, char *label, off_t size)
 {
 	alpm_list_t *row = NULL;
 	char *str;
@@ -572,7 +607,6 @@ static size_t table_calc_widths(const alpm_list_t *header,
 
 /** Displays the list in table format
  *
- * @param title the tables title
  * @param header the column headers. column count is determined by the nr
  *               of headers
  * @param rows the rows to display as a list of lists of strings. the outer
@@ -601,7 +635,7 @@ static int table_display(const alpm_list_t *header,
 	totalwidth = table_calc_widths(first, rows, padding, totalcols,
 			&widths, &has_data);
 	/* return -1 if terminal is not wide enough */
-	if(totalwidth > cols) {
+	if(cols && totalwidth > cols) {
 		pm_printf(ALPM_LOG_WARNING,
 				_("insufficient columns available for table display\n"));
 		ret = -1;
@@ -779,7 +813,7 @@ static alpm_list_t *create_verbose_header(size_t count)
 	alpm_list_t *ret = NULL;
 
 	char *header;
-	pm_asprintf(&header, "%s (%zd)", _("Package"), count);
+	pm_asprintf(&header, "%s (%zu)", _("Package"), count);
 
 	add_table_cell(&ret, header, CELL_TITLE | CELL_FREE);
 	add_table_cell(&ret, _("Old Version"), CELL_TITLE);
@@ -888,10 +922,10 @@ static void _display_targets(alpm_list_t *targets, int verbose)
 	}
 
 	/* print to screen */
-	pm_asprintf(&str, "%s (%zd)", _("Packages"), alpm_list_count(targets));
+	pm_asprintf(&str, "%s (%zu)", _("Packages"), alpm_list_count(targets));
 	printf("\n");
 
-	cols = getcols(fileno(stdout));
+	cols = getcols();
 	if(verbose) {
 		header = create_verbose_header(alpm_list_count(targets));
 		if(table_display(header, rows, cols) != 0) {
@@ -1042,7 +1076,7 @@ double humanize_size(off_t bytes, const char target_unit, int precision,
 {
 	static const char *labels[] = {"B", "KiB", "MiB", "GiB",
 		"TiB", "PiB", "EiB", "ZiB", "YiB"};
-	static const int unitcount = sizeof(labels) / sizeof(labels[0]);
+	static const int unitcount = ARRAYSIZE(labels);
 
 	double val = (double)bytes;
 	int index;
@@ -1165,11 +1199,12 @@ static int depend_cmp(const void *d1, const void *d2)
 
 static char *make_optstring(alpm_depend_t *optdep)
 {
+	alpm_db_t *localdb = alpm_get_localdb(config->handle);
 	char *optstring = alpm_dep_compute_string(optdep);
 	char *status = NULL;
-	if(alpm_db_get_pkg(alpm_get_localdb(config->handle), optdep->name)) {
+	if(alpm_find_satisfier(alpm_db_get_pkgcache(localdb), optstring)) {
 		status = _(" [installed]");
-	} else if(alpm_pkg_find(alpm_trans_get_add(config->handle), optdep->name)) {
+	} else if(alpm_find_satisfier(alpm_trans_get_add(config->handle), optstring)) {
 		status = _(" [pending]");
 	}
 	if(status) {
@@ -1195,7 +1230,7 @@ void display_new_optdepends(alpm_pkg_t *oldpkg, alpm_pkg_t *newpkg)
 
 	if(optstrings) {
 		printf(_("New optional dependencies for %s\n"), alpm_pkg_get_name(newpkg));
-		unsigned short cols = getcols(fileno(stdout));
+		unsigned short cols = getcols();
 		list_display_linebreak("   ", optstrings, cols);
 	}
 
@@ -1217,7 +1252,7 @@ void display_optdepends(alpm_pkg_t *pkg)
 
 	if(optstrings) {
 		printf(_("Optional dependencies for %s\n"), alpm_pkg_get_name(pkg));
-		unsigned short cols = getcols(fileno(stdout));
+		unsigned short cols = getcols();
 		list_display_linebreak("   ", optstrings, cols);
 	}
 
@@ -1240,7 +1275,7 @@ void select_display(const alpm_list_t *pkglist)
 	alpm_list_t *list = NULL;
 	char *string = NULL;
 	const char *dbname = NULL;
-	unsigned short cols = getcols(fileno(stdout));
+	unsigned short cols = getcols();
 
 	for(i = pkglist; i; i = i->next) {
 		alpm_pkg_t *pkg = i->data;
@@ -1323,13 +1358,12 @@ static int multiselect_parse(char *array, int count, char *response)
 		if(!ends) {
 			array[start - 1] = include;
 		} else {
-			int d;
 			if(parseindex(ends, &end, start, count) != 0) {
 				return -1;
 			}
-			for(d = start; d <= end; d++) {
-				array[d - 1] = include;
-			}
+			do {
+				array[start - 1] = include;
+			} while(start++ < end);
 		}
 	}
 
@@ -1372,20 +1406,23 @@ int multiselect_question(char *array, int count)
 
 		flush_term_input(fileno(stdin));
 
-		if(fgets(response, response_len, stdin)) {
+		if(safe_fgets(response, response_len, stdin)) {
 			const size_t response_incr = 64;
 			size_t len;
 			/* handle buffer not being large enough to read full line case */
 			while(*lastchar == '\0' && lastchar[-1] != '\n') {
+				char *new_response;
 				response_len += response_incr;
-				response = realloc(response, response_len);
-				if(!response) {
+				new_response = realloc(response, response_len);
+				if(!new_response) {
+					free(response);
 					return -1;
 				}
+				response = new_response;
 				lastchar = response + response_len - 1;
 				/* sentinel byte */
 				*lastchar = 1;
-				if(fgets(response + response_len - response_incr - 1,
+				if(safe_fgets(response + response_len - response_incr - 1,
 							response_incr + 1, stdin) == 0) {
 					free(response);
 					return -1;
@@ -1436,7 +1473,7 @@ int select_question(int count)
 
 		flush_term_input(fileno(stdin));
 
-		if(fgets(response, sizeof(response), stdin)) {
+		if(safe_fgets(response, sizeof(response), stdin)) {
 			size_t len = strtrim(response);
 			if(len > 0) {
 				int n;
@@ -1451,6 +1488,39 @@ int select_question(int count)
 	return (preset - 1);
 }
 
+#define CMP(x, y) ((x) < (y) ? -1 : ((x) > (y) ? 1 : 0))
+
+static int mbscasecmp(const char *s1, const char *s2)
+{
+	size_t len1 = strlen(s1), len2 = strlen(s2);
+	wchar_t c1, c2;
+	const char *p1 = s1, *p2 = s2;
+	mbstate_t ps1, ps2;
+	memset(&ps1, 0, sizeof(mbstate_t));
+	memset(&ps2, 0, sizeof(mbstate_t));
+	while(*p1 && *p2) {
+		size_t b1 = mbrtowc(&c1, p1, len1, &ps1);
+		size_t b2 = mbrtowc(&c2, p2, len2, &ps2);
+		if(b1 == (size_t) -2 || b1 == (size_t) -1
+				|| b2 == (size_t) -2 || b2 == (size_t) -1) {
+			/* invalid multi-byte string, fall back to strcasecmp */
+			return strcasecmp(p1, p2);
+		}
+		if(b1 == 0 || b2 == 0) {
+			return CMP(c1, c2);
+		}
+		c1 = towlower(c1);
+		c2 = towlower(c2);
+		if(c1 != c2) {
+			return CMP(c1, c2);
+		}
+		p1 += b1;
+		p2 += b2;
+		len1 -= b1;
+		len2 -= b2;
+	}
+	return CMP(*p1, *p2);
+}
 
 /* presents a prompt and gets a Y/N answer */
 __attribute__((format(printf, 2, 0)))
@@ -1490,7 +1560,7 @@ static int question(short preset, const char *format, va_list args)
 
 	flush_term_input(fd_in);
 
-	if(fgets(response, sizeof(response), stdin)) {
+	if(safe_fgets(response, sizeof(response), stdin)) {
 		size_t len = strtrim(response);
 		if(len == 0) {
 			return preset;
@@ -1502,9 +1572,9 @@ static int question(short preset, const char *format, va_list args)
 			fprintf(stream, "%s\n", response);
 		}
 
-		if(strcasecmp(response, _("Y")) == 0 || strcasecmp(response, _("YES")) == 0) {
+		if(mbscasecmp(response, _("Y")) == 0 || mbscasecmp(response, _("YES")) == 0) {
 			return 1;
-		} else if(strcasecmp(response, _("N")) == 0 || strcasecmp(response, _("NO")) == 0) {
+		} else if(mbscasecmp(response, _("N")) == 0 || mbscasecmp(response, _("NO")) == 0) {
 			return 0;
 		}
 	}

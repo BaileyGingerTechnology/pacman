@@ -1,7 +1,7 @@
 /*
  *  diskspace.c
  *
- *  Copyright (c) 2010-2014 Pacman Development Team <pacman-dev@archlinux.org>
+ *  Copyright (c) 2010-2016 Pacman Development Team <pacman-dev@archlinux.org>
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
@@ -112,7 +112,7 @@ static alpm_list_t *mount_point_list(alpm_handle_t *handle)
 
 	while((mnt = getmntent(fp))) {
 		CALLOC(mp, 1, sizeof(alpm_mountpoint_t), RET_ERR(handle, ALPM_ERR_MEMORY, NULL));
-		mp->mount_dir = strdup(mnt->mnt_dir);
+		STRDUP(mp->mount_dir, mnt->mnt_dir, free(mp); RET_ERR(handle, ALPM_ERR_MEMORY, NULL));
 		mp->mount_dir_len = strlen(mp->mount_dir);
 
 		mount_points = alpm_list_add(mount_points, mp);
@@ -135,7 +135,7 @@ static alpm_list_t *mount_point_list(alpm_handle_t *handle)
 
 	while((ret = getmntent(fp, &mnt)) == 0) {
 		CALLOC(mp, 1, sizeof(alpm_mountpoint_t), RET_ERR(handle, ALPM_ERR_MEMORY, NULL));
-		mp->mount_dir = strdup(mnt->mnt_mountp);
+		STRDUP(mp->mount_dir, mnt->mnt_mountp,  free(mp); RET_ERR(handle, ALPM_ERR_MEMORY, NULL));
 		mp->mount_dir_len = strlen(mp->mount_dir);
 
 		mount_points = alpm_list_add(mount_points, mp);
@@ -162,7 +162,7 @@ static alpm_list_t *mount_point_list(alpm_handle_t *handle)
 
 	for(; entries-- > 0; fsp++) {
 		CALLOC(mp, 1, sizeof(alpm_mountpoint_t), RET_ERR(handle, ALPM_ERR_MEMORY, NULL));
-		mp->mount_dir = strdup(fsp->f_mntonname);
+		STRDUP(mp->mount_dir, fsp->f_mntonname, free(mp); RET_ERR(handle, ALPM_ERR_MEMORY, NULL));
 		mp->mount_dir_len = strlen(mp->mount_dir);
 		memcpy(&(mp->fsp), fsp, sizeof(FSSTATSTYPE));
 #if defined(HAVE_GETMNTINFO_STATVFS) && defined(HAVE_STRUCT_STATVFS_F_FLAG)
@@ -235,7 +235,14 @@ static int calculate_removed_size(alpm_handle_t *handle,
 		const char *filename = file->name;
 
 		snprintf(path, PATH_MAX, "%s%s", handle->root, filename);
-		_alpm_lstat(path, &st);
+
+		if(llstat(path, &st) == -1) {
+			if(alpm_option_match_noextract(handle, filename)) {
+				_alpm_log(handle, ALPM_LOG_WARNING,
+						_("could not get file information for %s\n"), filename);
+			}
+			continue;
+		}
 
 		/* skip directories and symlinks to be consistent with libarchive that
 		 * reports them to be zero size */
@@ -341,11 +348,11 @@ static int check_mountpoint(alpm_handle_t *handle, alpm_mountpoint_t *mp)
 	_alpm_log(handle, ALPM_LOG_DEBUG,
 			"partition %s, needed %jd, cushion %ju, free %ju\n",
 			mp->mount_dir, (intmax_t)mp->max_blocks_needed,
-			(uintmax_t)cushion, (uintmax_t)mp->fsp.f_bfree);
-	if(needed >= 0 && (fsblkcnt_t)needed > mp->fsp.f_bfree) {
+			(uintmax_t)cushion, (uintmax_t)mp->fsp.f_bavail);
+	if(needed >= 0 && (fsblkcnt_t)needed > mp->fsp.f_bavail) {
 		_alpm_log(handle, ALPM_LOG_ERROR,
-				_("Partition %s too full: %jd blocks needed, %jd blocks free\n"),
-				mp->mount_dir, (intmax_t)needed, (uintmax_t)mp->fsp.f_bfree);
+				_("Partition %s too full: %jd blocks needed, %ju blocks free\n"),
+				mp->mount_dir, (intmax_t)needed, (uintmax_t)mp->fsp.f_bavail);
 		return 1;
 	}
 	return 0;

@@ -1,7 +1,7 @@
 /*
  *  pactree.c - a simple dependency tree viewer
  *
- *  Copyright (c) 2010-2014 Pacman Development Team <pacman-dev@archlinux.org>
+ *  Copyright (c) 2010-2016 Pacman Development Team <pacman-dev@archlinux.org>
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
@@ -28,6 +28,8 @@
 #ifdef HAVE_LANGINFO_H
 #include <langinfo.h>
 #endif
+
+#include "util-common.h"
 
 #define LINE_MAX     512
 
@@ -120,63 +122,6 @@ int unique = 0;
 int searchsyncs = 0;
 const char *dbpath = DBPATH;
 const char *configfile = CONFFILE;
-
-#ifndef HAVE_STRNDUP
-/* A quick and dirty implementation derived from glibc */
-static size_t strnlen(const char *s, size_t max)
-{
-	register const char *p;
-	for(p = s; *p && max--; ++p);
-	return (p - s);
-}
-
-char *strndup(const char *s, size_t n)
-{
-	size_t len = strnlen(s, n);
-	char *new = (char *) malloc(len + 1);
-
-	if(new == NULL)
-		return NULL;
-
-	new[len] = '\0';
-	return (char *)memcpy(new, s, len);
-}
-#endif
-
-static size_t strtrim(char *str)
-{
-	char *end, *pch = str;
-
-	if(str == NULL || *str == '\0') {
-		/* string is empty, so we're done. */
-		return 0;
-	}
-
-	while(isspace((unsigned char)*pch)) {
-		pch++;
-	}
-	if(pch != str) {
-		size_t len = strlen(pch);
-		if(len) {
-			memmove(str, pch, len + 1);
-		} else {
-			*str = '\0';
-		}
-	}
-
-	/* check if there wasn't anything but whitespace in the string. */
-	if(*str == '\0') {
-		return 0;
-	}
-
-	end = (str + strlen(str) - 1);
-	while(isspace((unsigned char)*end)) {
-		end--;
-	}
-	*++end = '\0';
-
-	return end - pch;
-}
 
 static int register_syncs(void)
 {
@@ -338,7 +283,7 @@ static void cleanup(void)
 static void print_text(const char *pkg, const char *provision,
 		tdepth *depth, int last)
 {
-	const char* tip = "";
+	const char *tip = "";
 	int level = 1;
 	if(!pkg && !provision) {
 		/* not much we can do */
